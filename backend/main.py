@@ -3030,19 +3030,20 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
     async def generate():
         try:
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Processing images...'})}\n\n"
+            await asyncio.sleep(0)
 
+            import base64
             image_agent = ImageContextRetrieverAgent(provider="claude")
             image_contexts = []
             for img in request.images:
-                import base64
                 raw = base64.b64decode(img["content_b64"])
-                result = image_agent.process(raw, "")
+                result = await asyncio.to_thread(image_agent.process, raw, "")
                 if result:
                     image_contexts.append(result)
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Synthesising context...'})}\n\n"
+            await asyncio.sleep(0)
 
-            # Build combined context text for synthesis
             context_parts = []
             for ctx in image_contexts:
                 if ctx.get("description"):
@@ -3052,7 +3053,6 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
             for text in request.texts:
                 context_parts.append(f"User note: {text}")
 
-            # Use TestPlannerAgent's underlying LLM to synthesise a project-level summary
             from agents.base_agent import BaseAgent
             class _SynthAgent(BaseAgent):
                 @property
@@ -3066,15 +3066,17 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
                 def parse_response(self, response_text: str):
                     return self.extract_json(response_text)
                 def synthesise(self, raw_context: str) -> str:
-                    result = self.parse_response(self.call_gemini(raw_context, max_tokens=512))
+                    result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
             synth = _SynthAgent(provider="claude")
-            context_summary = synth.synthesise("\n".join(context_parts)) if context_parts else ""
+            context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving project...'})}\n\n"
+            await asyncio.sleep(0)
 
-            project = cloud_create_project(
+            project = await asyncio.to_thread(
+                cloud_create_project,
                 name=request.name,
                 description=request.description,
                 context_summary=context_summary,
@@ -3084,9 +3086,9 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
                 yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to create project in cloud'})}\n\n"
                 return
 
-            # Save context items to cloud (fire-and-forget, non-blocking)
             if request.images or request.texts:
-                cloud_save_context_items_batch(
+                await asyncio.to_thread(
+                    cloud_save_context_items_batch,
                     level="project",
                     level_id=project["id"],
                     images=request.images,
@@ -3099,7 +3101,11 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
         except Exception as e:
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class UpdateProjectContextRequest(BaseModel):

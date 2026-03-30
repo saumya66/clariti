@@ -2,12 +2,13 @@ import * as React from 'react';
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router';
 import {
   FlaskConical,
-  BookText,
-  Info,
-  ChevronRight,
   Plus,
   CalendarDays,
-  FileText,
+  ArrowUpRight,
+  Sparkles,
+  CheckCircle2,
+  Circle,
+  ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +26,7 @@ import {
 import { CreateTestFlow } from '@/components/CreateTestFlow';
 import { useProject, useProjectFeatures } from '@/hooks/useProjectsQueries';
 import { cn } from '@/lib/utils';
+import type { Feature } from '@/api/client';
 
 export const Route = createFileRoute('/app/projects/$projectId/')({
   component: ProjectBentoPage,
@@ -38,6 +40,13 @@ function formatDate(dateStr: string) {
   });
 }
 
+function FeatureStatusDot({ status }: { status?: string }) {
+  const isReady = status === 'context_ready' || status === 'tests_generated';
+  return isReady
+    ? <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />
+    : <Circle className="size-3.5 text-muted-foreground/40 shrink-0" />;
+}
+
 function ProjectBentoPage() {
   const { projectId } = Route.useParams();
   const router = useRouter();
@@ -47,7 +56,8 @@ function ProjectBentoPage() {
 
   if (!project) return null;
 
-  const previewFeatures = features.slice(0, 3);
+  const hasContext = !!project.context_summary;
+  const previewFeatures = features.slice(0, 5);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
@@ -56,9 +66,7 @@ function ProjectBentoPage() {
         <BreadcrumbList>
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link to="/app" className="text-muted-foreground hover:text-foreground">
-                Projects
-              </Link>
+              <Link to="/app" className="text-muted-foreground hover:text-foreground">Projects</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -68,130 +76,193 @@ function ProjectBentoPage() {
         </BreadcrumbList>
       </Breadcrumb>
 
-      {/* Page header */}
-      <div className="mb-8 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">{project.name}</h1>
-          {project.description && (
-            <p className="mt-1 text-sm text-muted-foreground">{project.description}</p>
-          )}
-        </div>
-        <Button
-          className="shrink-0"
-          onClick={() => setCreateTestOpen(true)}
-        >
-          <Plus className="size-4" />
-          New Test Suite
-        </Button>
-      </div>
-
       {/* Bento grid */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {/* Card 1 — Test Suites (clickable) */}
-        <button
-          onClick={() => router.navigate({ to: '/app/projects/$projectId/tests', params: { projectId } })}
-          className={cn(
-            'group relative flex flex-col rounded-xl border border-border bg-card p-5 text-left',
-            'transition-all duration-200 hover:border-primary/40 hover:shadow-md',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            'sm:col-span-1'
-          )}
-        >
-          <div className="mb-4 flex items-center justify-between">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <FlaskConical className="size-5" />
-            </div>
-            <ChevronRight className="size-4 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-primary" />
-          </div>
-          <h2 className="text-base font-semibold text-foreground">Test Suites</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {featuresLoading ? (
-              <span className="animate-pulse">Loading…</span>
-            ) : (
-              <>
-                {features.length} suite{features.length !== 1 ? 's' : ''}
-              </>
-            )}
-          </p>
-          {previewFeatures.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              {previewFeatures.map((f) => (
-                <span
-                  key={f.id}
-                  className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                >
-                  {f.name}
-                </span>
-              ))}
-              {features.length > 3 && (
-                <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                  +{features.length - 3} more
-                </span>
-              )}
-            </div>
-          )}
-        </button>
+      <div className="grid auto-rows-auto grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 
-        {/* Card 2 — Project Context (navigable) */}
-        <button
-          onClick={() => router.navigate({ to: '/app/projects/$projectId/context', params: { projectId } })}
-          className={cn(
-            'group relative flex flex-col rounded-xl border border-border bg-card p-5 text-left',
-            'transition-all duration-200 hover:border-violet-500/40 hover:shadow-md',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            'sm:col-span-1 lg:col-span-2'
-          )}
-        >
-          <div className="mb-4 flex items-center justify-between">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-400">
-              <BookText className="size-5" />
-            </div>
-            <ChevronRight className="size-4 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-violet-500" />
+        {/* ── Hero card ── */}
+        <div className="relative col-span-1 flex flex-col overflow-hidden rounded-2xl bg-violet-600 p-6 sm:col-span-2 lg:col-span-2">
+          {/* Decorative blobs */}
+          <div className="pointer-events-none absolute -right-8 -top-8 size-48 rounded-full bg-white/10" />
+          <div className="pointer-events-none absolute -bottom-12 -right-4 size-64 rounded-full bg-white/5" />
+
+          {/* Badge */}
+          <div className="mb-4 w-fit rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-white/80">
+            Active Project
           </div>
-          <h2 className="text-base font-semibold text-foreground">Project Context</h2>
-          {project.context_summary ? (
-            <p className="mt-1 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
-              {project.context_summary}
+
+          {/* Title */}
+          <h1 className="text-3xl font-bold text-white">{project.name}</h1>
+          {project.description && (
+            <p className="mt-2 max-w-md text-sm leading-relaxed text-violet-200">
+              {project.description}
             </p>
-          ) : (
-            <div className="mt-1 flex flex-col items-start gap-2">
-              <p className="text-sm text-muted-foreground">No context added yet.</p>
-              <p className="flex items-start gap-1.5 rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
-                <Info className="mt-0.5 size-3.5 shrink-0" />
-                Click to add images or text to generate a rich context summary.
-              </p>
-            </div>
           )}
-        </button>
 
-        {/* Card 3 — Quick Info */}
-        <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-5 sm:col-span-2 lg:col-span-3">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <Info className="size-5" />
-            </div>
-            <h2 className="text-base font-semibold text-foreground">Quick Info</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <CalendarDays className="size-4 shrink-0" />
-              <span>
-                Created <span className="text-foreground font-medium">{formatDate(project.created_at)}</span>
+          {/* Stats row */}
+          <div className="mt-6 flex flex-wrap items-center gap-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-300">
+                Test Suites
+              </span>
+              <span className="text-xl font-bold text-white">
+                {featuresLoading ? '—' : features.length}
               </span>
             </div>
-            {project.description ? (
-              <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                <FileText className="mt-0.5 size-4 shrink-0" />
-                <span className="line-clamp-2">{project.description}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <FileText className="size-4 shrink-0" />
-                <span className="italic">No description</span>
-              </div>
-            )}
+            <div className="h-8 w-px bg-white/20" />
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-300">
+                Context
+              </span>
+              <span className={cn(
+                'text-sm font-semibold',
+                hasContext ? 'text-emerald-300' : 'text-violet-200'
+              )}>
+                {hasContext ? '● Ready' : '○ Not set'}
+              </span>
+            </div>
+            <div className="h-8 w-px bg-white/20" />
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-300">
+                Created
+              </span>
+              <span className="text-sm font-medium text-white">
+                {formatDate(project.created_at)}
+              </span>
+            </div>
+          </div>
+
+          {/* CTA */}
+          <div className="mt-6 flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-white text-violet-700 hover:bg-violet-50"
+              onClick={() => setCreateTestOpen(true)}
+            >
+              <Plus className="size-3.5" />
+              New Test Suite
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-white/80 hover:bg-white/10 hover:text-white"
+              onClick={() => router.navigate({ to: '/app/projects/$projectId/tests', params: { projectId } })}
+            >
+              View all suites
+              <ArrowUpRight className="size-3.5" />
+            </Button>
           </div>
         </div>
+
+        {/* ── Test Suites list card ── */}
+        <button
+          onClick={() => router.navigate({ to: '/app/projects/$projectId/tests', params: { projectId } })}
+          className="group col-span-1 flex flex-col rounded-2xl border border-border bg-card p-5 text-left transition-all hover:border-primary/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10">
+                <FlaskConical className="size-4 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Test Suites</h2>
+                <p className="text-xs text-muted-foreground">
+                  {featuresLoading ? 'Loading…' : `${features.length} suite${features.length !== 1 ? 's' : ''}`}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+              View all <ArrowUpRight className="size-3.5" />
+            </div>
+          </div>
+
+          {featuresLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-9 animate-pulse rounded-lg bg-muted" />
+              ))}
+            </div>
+          ) : previewFeatures.length > 0 ? (
+            <div className="space-y-1">
+              {previewFeatures.map((f: Feature) => (
+                <div key={f.id} className="flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-muted/50">
+                  <FeatureStatusDot status={f.status} />
+                  <span className="flex-1 truncate text-sm text-foreground">{f.name}</span>
+                  <span className={cn(
+                    'rounded-full px-2 py-0.5 text-[10px] font-medium capitalize',
+                    f.status === 'context_ready' || f.status === 'tests_generated'
+                      ? 'bg-emerald-500/10 text-emerald-600'
+                      : 'bg-muted text-muted-foreground'
+                  )}>
+                    {f.status?.replace('_', ' ') ?? 'pending'}
+                  </span>
+                </div>
+              ))}
+              {features.length > 5 && (
+                <p className="px-3 pt-1 text-xs text-muted-foreground">
+                  +{features.length - 5} more
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center">
+              <div className="flex size-10 items-center justify-center rounded-xl bg-muted">
+                <FlaskConical className="size-5 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-foreground">No test suites yet</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Create your first test suite to get started.</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setCreateTestOpen(true); }}>
+                <Plus className="size-3.5" />
+                New Test Suite
+              </Button>
+            </div>
+          )}
+        </button>
+
+        {/* ── AI Context / Project Info — full width ── */}
+        {hasContext ? (
+          <button
+            onClick={() => router.navigate({ to: '/app/projects/$projectId/context', params: { projectId } })}
+            className="group col-span-1 flex flex-col rounded-2xl border border-border bg-card p-6 text-left transition-all hover:border-amber-400/40 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:col-span-2 lg:col-span-3"
+          >
+            <div className="mb-4 flex items-center gap-2.5">
+              <div className="flex size-9 items-center justify-center rounded-xl bg-amber-500/10">
+                <Sparkles className="size-4 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-amber-600">AI Insight</p>
+                <h2 className="text-sm font-semibold text-foreground">Project Context Summary</h2>
+              </div>
+            </div>
+            <p className="line-clamp-3 text-sm leading-relaxed text-muted-foreground">
+              {project.context_summary}
+            </p>
+            <div className="mt-4 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              View full context <ChevronRight className="size-3" />
+            </div>
+          </button>
+        ) : (
+          <div className="col-span-1 flex flex-col rounded-2xl border border-border bg-card p-5 sm:col-span-2 lg:col-span-3">
+            <div className="mb-3 flex items-center gap-2">
+              <CalendarDays className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold text-foreground">Project Info</h2>
+            </div>
+            <div className="flex flex-wrap gap-6 text-sm text-muted-foreground">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 mb-0.5">Created</p>
+                <p className="font-medium text-foreground">{formatDate(project.created_at)}</p>
+              </div>
+              {project.description && (
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 mb-0.5">Description</p>
+                  <p>{project.description}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
       </div>
 
       {/* New Test Suite Dialog */}

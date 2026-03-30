@@ -11,6 +11,8 @@ import {
   Loader2,
   ArrowRight,
   Sparkles,
+  ScanText,
+  LayoutGrid,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -378,7 +380,6 @@ function ProjectContextPage() {
   const existingTexts = contextItems.filter((i) => i.type === 'text');
 
   function handleContextSuccess() {
-    // Refetch project so context_summary updates
     queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId) });
     refetchProject();
   }
@@ -392,19 +393,13 @@ function ProjectContextPage() {
         <BreadcrumbList>
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link to="/app" className="text-muted-foreground hover:text-foreground">
-                Projects
-              </Link>
+              <Link to="/app" className="text-muted-foreground hover:text-foreground">Projects</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link
-                to="/app/projects/$projectId"
-                params={{ projectId }}
-                className="text-muted-foreground hover:text-foreground"
-              >
+              <Link to="/app/projects/$projectId" params={{ projectId }} className="text-muted-foreground hover:text-foreground">
                 {project.name}
               </Link>
             </BreadcrumbLink>
@@ -417,80 +412,73 @@ function ProjectContextPage() {
       </Breadcrumb>
 
       {/* Page header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-foreground">Project Context</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Define the foundational knowledge the AI uses to generate accurate test cases.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Project Context</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Foundational knowledge the AI uses to generate accurate test cases.
+          </p>
+        </div>
+        {hasContext && (
+          <Button size="sm" onClick={() => setModalOpen(true)} disabled={itemsLoading}>
+            <RefreshCw className="size-3.5" />
+            Update Context
+          </Button>
+        )}
       </div>
 
-      {/* Content */}
       {!hasContext ? (
         /* ── Empty state ── */
-        <div className="flex flex-1 flex-col items-center justify-center">
-          <div className="w-full max-w-lg rounded-2xl border border-dashed border-border bg-card p-12 text-center">
-            <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400">
-              <BookText className="size-8" />
+        <div className="flex flex-1 items-center justify-center py-20">
+          <div className="w-full max-w-md rounded-2xl border border-dashed border-border bg-card p-12 text-center">
+            <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-violet-500/10">
+              <BookText className="size-7 text-violet-600" />
             </div>
-            <h2 className="mt-5 text-lg font-semibold text-foreground">No project context yet</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-              Add screenshots and text notes to help the AI understand your product. Rich context leads to significantly better test coverage.
+            <h2 className="mt-5 text-lg font-semibold text-foreground">No context added yet</h2>
+            <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
+              Upload screenshots and text notes — the AI will analyse them and build a context summary that powers better test generation.
             </p>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <ImageIcon className="size-3.5" />
-                UI Screenshots
-              </div>
-              <div className="flex items-center gap-1.5">
-                <FileText className="size-3.5" />
-                User Stories
-              </div>
-              <div className="flex items-center gap-1.5">
-                <FileText className="size-3.5" />
-                Technical Specs
-              </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              {[
+                { icon: ImageIcon, label: 'UI Screenshots' },
+                { icon: FileText, label: 'User Stories' },
+                { icon: ScanText, label: 'Tech Specs' },
+              ].map(({ icon: Icon, label }) => (
+                <span key={label} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 px-3 py-1 text-xs text-muted-foreground">
+                  <Icon className="size-3" />
+                  {label}
+                </span>
+              ))}
             </div>
-            <Button
-              className="mt-8"
-              onClick={() => setModalOpen(true)}
-            >
+            <Button className="mt-8" onClick={() => setModalOpen(true)}>
               <Plus className="size-4" />
               Add Context
             </Button>
           </div>
         </div>
       ) : (
-        /* ── Populated state ── */
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {/* Card 1 — What we understand */}
-          <div className={cn(
-            'flex flex-col rounded-xl border border-border bg-card p-5',
-            'lg:col-span-2'
-          )}>
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-400">
-                <Sparkles className="size-5" />
-              </div>
-              <div>
-                <h2 className="text-base font-semibold text-foreground">What we understand</h2>
-                <p className="text-xs text-muted-foreground">AI-generated project context summary</p>
-              </div>
+        /* ── Populated bento ── */
+        <div className="grid auto-rows-auto grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+
+          {/* ── AI Summary — spans 2 cols on large ── */}
+          <div className="flex flex-col rounded-2xl border border-border bg-card p-6 lg:col-span-2">
+            <div className="mb-1 flex items-center gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-500">AI SUMMARY</span>
             </div>
-            <p className="flex-1 text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+            <h2 className="mb-3 text-lg font-semibold text-foreground">What we understand</h2>
+            <p className="flex-1 text-sm leading-relaxed text-muted-foreground line-clamp-12">
               {project.context_summary}
             </p>
-
-            {/* Asset counts */}
-            {!itemsLoading && (existingImages.length > 0 || existingTexts.length > 0) && (
-              <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-4">
+            {(existingImages.length > 0 || existingTexts.length > 0) && (
+              <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
                 {existingImages.length > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
                     <ImageIcon className="size-3" />
                     {existingImages.length} image{existingImages.length !== 1 ? 's' : ''}
                   </span>
                 )}
                 {existingTexts.length > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
                     <FileText className="size-3" />
                     {existingTexts.length} text note{existingTexts.length !== 1 ? 's' : ''}
                   </span>
@@ -499,30 +487,100 @@ function ProjectContextPage() {
             )}
           </div>
 
-          {/* Card 2 — Update context */}
-          <div className="flex flex-col rounded-xl border border-border bg-card p-5">
-            <div className="mb-4 flex size-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <RefreshCw className="size-5" />
+          {/* ── Upload / Update CTA ── */}
+          <div
+            className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl bg-violet-600 p-6 transition-opacity hover:opacity-90"
+            onClick={() => setModalOpen(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && setModalOpen(true)}
+          >
+            <div className="mb-4 flex size-10 items-center justify-center rounded-xl bg-white/20">
+              <Upload className="size-5 text-white" />
             </div>
-            <h2 className="text-base font-semibold text-foreground">Update Context</h2>
-            <p className="mt-1 flex-1 text-sm text-muted-foreground">
-              Add or replace screenshots and notes to regenerate the context summary.
+            <h2 className="text-base font-semibold text-white">Update Context</h2>
+            <p className="mt-1 flex-1 text-sm text-violet-200">
+              Replace or add screenshots and notes to regenerate the AI summary.
             </p>
-            <Button
-              className="mt-5 w-full"
-              variant="outline"
-              onClick={() => setModalOpen(true)}
-              disabled={itemsLoading}
-            >
-              <RefreshCw className="size-4" />
-              Update
-            </Button>
+            <div className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1.5 text-xs font-medium text-white">
+              <RefreshCw className="size-3" />
+              Regenerate
+            </div>
+            {/* decorative blobs */}
+            <div className="pointer-events-none absolute -bottom-6 -right-6 size-28 rounded-full bg-white/10" />
+            <div className="pointer-events-none absolute -bottom-10 -right-12 size-40 rounded-full bg-white/5" />
           </div>
+
+          {/* ── Screenshots grid ── */}
+          {existingImages.length > 0 && (
+            <div className="flex flex-col rounded-2xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <LayoutGrid className="size-4 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">Screenshots</span>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  {existingImages.length}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {existingImages.slice(0, 6).map((img) => (
+                  <div key={img.id} className="aspect-square overflow-hidden rounded-lg border border-border bg-muted">
+                    {img.content ? (
+                      <img
+                        src={dataUrlFromBase64(img.content, img.filename ?? 'image.png')}
+                        alt={img.filename ?? 'screenshot'}
+                        className="size-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex size-full items-center justify-center">
+                        <ImageIcon className="size-4 text-muted-foreground" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {existingImages.length > 6 && (
+                  <div className="flex aspect-square items-center justify-center rounded-lg border border-border bg-muted text-xs font-medium text-muted-foreground">
+                    +{existingImages.length - 6}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Text notes preview ── */}
+          {existingTexts.length > 0 && (
+            <div className={cn(
+              'flex flex-col rounded-2xl border border-border bg-card p-5',
+              existingImages.length === 0 ? 'md:col-span-1' : ''
+            )}>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ScanText className="size-4 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">Notes</span>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  {existingTexts.length}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {existingTexts.slice(0, 2).map((item) => (
+                  <p key={item.id} className="line-clamp-3 rounded-lg bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                    {item.content}
+                  </p>
+                ))}
+                {existingTexts.length > 2 && (
+                  <p className="text-xs text-muted-foreground">+{existingTexts.length - 2} more note{existingTexts.length - 2 !== 1 ? 's' : ''}</p>
+                )}
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
       {/* Back link */}
-      <div className="mt-6">
+      <div className="mt-8">
         <Link
           to="/app/projects/$projectId"
           params={{ projectId }}
@@ -533,7 +591,6 @@ function ProjectContextPage() {
         </Link>
       </div>
 
-      {/* Modal */}
       <ProjectContextModal
         open={modalOpen}
         onOpenChange={setModalOpen}

@@ -47,6 +47,7 @@ export function ProjectsSection() {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [viewMode, setViewMode] = React.useState<ViewMode>('grid');
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [createProgress, setCreateProgress] = React.useState<string | null>(null);
   const [editProject, setEditProject] = React.useState<Project | null>(null);
 
   const { projects, loading, error, refetch, isAuthenticated } = useProjects();
@@ -217,15 +218,26 @@ export function ProjectsSection() {
       {/* Create project dialog */}
       <CreateProjectDialog
         open={createOpen}
-        onOpenChange={setCreateOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setCreateProgress(null);
+        }}
         onSubmit={(name, description, images, texts) => {
+          setCreateProgress(null);
           createProject.mutate(
-            { input: { name, description, images, texts } },
-            { onSuccess: () => setCreateOpen(false) }
+            {
+              input: { name, description, images, texts },
+              callbacks: {
+                onProgress: (msg) => setCreateProgress(msg),
+                onError: (msg) => setCreateProgress(`Error: ${msg}`),
+              },
+            },
+            { onSuccess: () => { setCreateOpen(false); setCreateProgress(null); } }
           );
         }}
         isLoading={createProject.isPending}
         isPending={createProject.isPending}
+        progressMessage={createProgress}
       />
 
       {/* Edit project dialog */}
@@ -252,6 +264,7 @@ interface CreateProjectDialogProps {
   onSubmit: (name: string, description: string | undefined, images: File[], texts: string[]) => void;
   isLoading: boolean;
   isPending: boolean;
+  progressMessage?: string | null;
 }
 
 interface StagedImage {
@@ -259,7 +272,7 @@ interface StagedImage {
   file: File;
 }
 
-function CreateProjectDialog({ open, onOpenChange, onSubmit, isLoading }: CreateProjectDialogProps) {
+function CreateProjectDialog({ open, onOpenChange, onSubmit, isLoading, progressMessage }: CreateProjectDialogProps) {
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [stagedImages, setStagedImages] = React.useState<StagedImage[]>([]);
@@ -453,11 +466,19 @@ function CreateProjectDialog({ open, onOpenChange, onSubmit, isLoading }: Create
             )}
           </div>
 
-          {/* Loading state */}
+          {/* Loading state with live SSE progress */}
           {isLoading && (
-            <div className="flex items-center gap-2 rounded-lg bg-primary/5 border border-primary/20 px-3 py-2 text-sm text-primary">
-              <Loader className="w-4 h-4 animate-spin shrink-0" />
-              {hasContext ? 'Processing assets and creating project...' : 'Creating project...'}
+            <div className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm border",
+              progressMessage?.startsWith('Error:')
+                ? "bg-destructive/5 border-destructive/20 text-destructive"
+                : "bg-primary/5 border-primary/20 text-primary"
+            )}>
+              {progressMessage?.startsWith('Error:')
+                ? <AlertCircle className="w-4 h-4 shrink-0" />
+                : <Loader className="w-4 h-4 animate-spin shrink-0" />
+              }
+              {progressMessage ?? (hasContext ? 'Processing assets...' : 'Creating project...')}
             </div>
           )}
 
