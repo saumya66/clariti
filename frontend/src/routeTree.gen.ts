@@ -19,8 +19,8 @@ import { Route as AppExecuteRouteImport } from './routes/app/execute'
 import { Route as AppCreateRouteImport } from './routes/app/create'
 import { Route as AppProjectsProjectIdRouteImport } from './routes/app/projects/$projectId'
 import { Route as AppProjectsProjectIdIndexRouteImport } from './routes/app/projects/$projectId/index'
-import { Route as AppProjectsProjectIdTestsRouteImport } from './routes/app/projects/$projectId/tests'
 import { Route as AppProjectsProjectIdContextRouteImport } from './routes/app/projects/$projectId/context'
+import { Route as AppProjectsProjectIdTestsIndexRouteImport } from './routes/app/projects/$projectId/tests/index'
 import { Route as AppProjectsProjectIdTestsFeatureIdRouteImport } from './routes/app/projects/$projectId/tests/$featureId'
 
 const LoginRoute = LoginRouteImport.update({
@@ -74,23 +74,23 @@ const AppProjectsProjectIdIndexRoute =
     path: '/',
     getParentRoute: () => AppProjectsProjectIdRoute,
   } as any)
-const AppProjectsProjectIdTestsRoute =
-  AppProjectsProjectIdTestsRouteImport.update({
-    id: '/tests',
-    path: '/tests',
-    getParentRoute: () => AppProjectsProjectIdRoute,
-  } as any)
 const AppProjectsProjectIdContextRoute =
   AppProjectsProjectIdContextRouteImport.update({
     id: '/context',
     path: '/context',
     getParentRoute: () => AppProjectsProjectIdRoute,
   } as any)
+const AppProjectsProjectIdTestsIndexRoute =
+  AppProjectsProjectIdTestsIndexRouteImport.update({
+    id: '/tests/',
+    path: '/tests/',
+    getParentRoute: () => AppProjectsProjectIdRoute,
+  } as any)
 const AppProjectsProjectIdTestsFeatureIdRoute =
   AppProjectsProjectIdTestsFeatureIdRouteImport.update({
-    id: '/$featureId',
-    path: '/$featureId',
-    getParentRoute: () => AppProjectsProjectIdTestsRoute,
+    id: '/tests/$featureId',
+    path: '/tests/$featureId',
+    getParentRoute: () => AppProjectsProjectIdRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -104,9 +104,9 @@ export interface FileRoutesByFullPath {
   '/app/': typeof AppIndexRoute
   '/app/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
-  '/app/projects/$projectId/tests': typeof AppProjectsProjectIdTestsRouteWithChildren
   '/app/projects/$projectId/': typeof AppProjectsProjectIdIndexRoute
   '/app/projects/$projectId/tests/$featureId': typeof AppProjectsProjectIdTestsFeatureIdRoute
+  '/app/projects/$projectId/tests/': typeof AppProjectsProjectIdTestsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -117,9 +117,9 @@ export interface FileRoutesByTo {
   '/app/execute': typeof AppExecuteRoute
   '/app': typeof AppIndexRoute
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
-  '/app/projects/$projectId/tests': typeof AppProjectsProjectIdTestsRouteWithChildren
   '/app/projects/$projectId': typeof AppProjectsProjectIdIndexRoute
   '/app/projects/$projectId/tests/$featureId': typeof AppProjectsProjectIdTestsFeatureIdRoute
+  '/app/projects/$projectId/tests': typeof AppProjectsProjectIdTestsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -133,9 +133,9 @@ export interface FileRoutesById {
   '/app/': typeof AppIndexRoute
   '/app/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
-  '/app/projects/$projectId/tests': typeof AppProjectsProjectIdTestsRouteWithChildren
   '/app/projects/$projectId/': typeof AppProjectsProjectIdIndexRoute
   '/app/projects/$projectId/tests/$featureId': typeof AppProjectsProjectIdTestsFeatureIdRoute
+  '/app/projects/$projectId/tests/': typeof AppProjectsProjectIdTestsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -150,9 +150,9 @@ export interface FileRouteTypes {
     | '/app/'
     | '/app/projects/$projectId'
     | '/app/projects/$projectId/context'
-    | '/app/projects/$projectId/tests'
     | '/app/projects/$projectId/'
     | '/app/projects/$projectId/tests/$featureId'
+    | '/app/projects/$projectId/tests/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -163,9 +163,9 @@ export interface FileRouteTypes {
     | '/app/execute'
     | '/app'
     | '/app/projects/$projectId/context'
-    | '/app/projects/$projectId/tests'
     | '/app/projects/$projectId'
     | '/app/projects/$projectId/tests/$featureId'
+    | '/app/projects/$projectId/tests'
   id:
     | '__root__'
     | '/'
@@ -178,9 +178,9 @@ export interface FileRouteTypes {
     | '/app/'
     | '/app/projects/$projectId'
     | '/app/projects/$projectId/context'
-    | '/app/projects/$projectId/tests'
     | '/app/projects/$projectId/'
     | '/app/projects/$projectId/tests/$featureId'
+    | '/app/projects/$projectId/tests/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -263,13 +263,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectIdIndexRouteImport
       parentRoute: typeof AppProjectsProjectIdRoute
     }
-    '/app/projects/$projectId/tests': {
-      id: '/app/projects/$projectId/tests'
-      path: '/tests'
-      fullPath: '/app/projects/$projectId/tests'
-      preLoaderRoute: typeof AppProjectsProjectIdTestsRouteImport
-      parentRoute: typeof AppProjectsProjectIdRoute
-    }
     '/app/projects/$projectId/context': {
       id: '/app/projects/$projectId/context'
       path: '/context'
@@ -277,41 +270,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectIdContextRouteImport
       parentRoute: typeof AppProjectsProjectIdRoute
     }
+    '/app/projects/$projectId/tests/': {
+      id: '/app/projects/$projectId/tests/'
+      path: '/tests'
+      fullPath: '/app/projects/$projectId/tests/'
+      preLoaderRoute: typeof AppProjectsProjectIdTestsIndexRouteImport
+      parentRoute: typeof AppProjectsProjectIdRoute
+    }
     '/app/projects/$projectId/tests/$featureId': {
       id: '/app/projects/$projectId/tests/$featureId'
-      path: '/$featureId'
+      path: '/tests/$featureId'
       fullPath: '/app/projects/$projectId/tests/$featureId'
       preLoaderRoute: typeof AppProjectsProjectIdTestsFeatureIdRouteImport
-      parentRoute: typeof AppProjectsProjectIdTestsRoute
+      parentRoute: typeof AppProjectsProjectIdRoute
     }
   }
 }
 
-interface AppProjectsProjectIdTestsRouteChildren {
-  AppProjectsProjectIdTestsFeatureIdRoute: typeof AppProjectsProjectIdTestsFeatureIdRoute
-}
-
-const AppProjectsProjectIdTestsRouteChildren: AppProjectsProjectIdTestsRouteChildren =
-  {
-    AppProjectsProjectIdTestsFeatureIdRoute:
-      AppProjectsProjectIdTestsFeatureIdRoute,
-  }
-
-const AppProjectsProjectIdTestsRouteWithChildren =
-  AppProjectsProjectIdTestsRoute._addFileChildren(
-    AppProjectsProjectIdTestsRouteChildren,
-  )
-
 interface AppProjectsProjectIdRouteChildren {
   AppProjectsProjectIdContextRoute: typeof AppProjectsProjectIdContextRoute
-  AppProjectsProjectIdTestsRoute: typeof AppProjectsProjectIdTestsRouteWithChildren
   AppProjectsProjectIdIndexRoute: typeof AppProjectsProjectIdIndexRoute
+  AppProjectsProjectIdTestsFeatureIdRoute: typeof AppProjectsProjectIdTestsFeatureIdRoute
+  AppProjectsProjectIdTestsIndexRoute: typeof AppProjectsProjectIdTestsIndexRoute
 }
 
 const AppProjectsProjectIdRouteChildren: AppProjectsProjectIdRouteChildren = {
   AppProjectsProjectIdContextRoute: AppProjectsProjectIdContextRoute,
-  AppProjectsProjectIdTestsRoute: AppProjectsProjectIdTestsRouteWithChildren,
   AppProjectsProjectIdIndexRoute: AppProjectsProjectIdIndexRoute,
+  AppProjectsProjectIdTestsFeatureIdRoute:
+    AppProjectsProjectIdTestsFeatureIdRoute,
+  AppProjectsProjectIdTestsIndexRoute: AppProjectsProjectIdTestsIndexRoute,
 }
 
 const AppProjectsProjectIdRouteWithChildren =
