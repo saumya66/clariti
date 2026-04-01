@@ -551,15 +551,19 @@ export async function buildContext(
 // Test Generation Types
 // =============================================================================
 
-export interface TestCase {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  priority: 'must' | 'should' | 'could';
-  steps: string[];
-  expected_result: string;
-  excluded?: boolean;
+/** Single source of truth for test cases — mirrors cloud backend TestCase schema. */
+export interface CloudTestCase {
+  id?: string;                    // absent during generation, present after save
+  feature_id?: string;
+  test_key: string;               // e.g. TC-001
+  title: string;
+  goal: string;
+  description?: string | null;
+  expected_result?: string | null;
+  priority?: string | null;       // critical / high / medium / low
+  category?: string | null;
+  generated_by_model?: string | null;
+  created_at?: string;
 }
 
 export interface TestPlanResponse {
@@ -568,7 +572,7 @@ export interface TestPlanResponse {
   feature_name: string;
   feature_summary: string;
   test_count: number;
-  test_cases: TestCase[];
+  test_cases: CloudTestCase[];
   coverage_notes: string;
   status: string;
   message: string;
@@ -593,7 +597,7 @@ export interface ApproveTestsResponse {
   context_id: string;
   feature_name: string;
   test_count: number;
-  test_cases: TestCase[];
+  test_cases: CloudTestCase[];
   status: string;
   message: string;
 }
@@ -640,7 +644,7 @@ export async function provideGuidance(
 export async function updateTestCase(
   contextId: string,
   testId: string,
-  updates: Partial<TestCase>
+  updates: Partial<CloudTestCase>
 ): Promise<void> {
   await apiClient.patch(`/feature/${contextId}/tests/${testId}`, updates);
 }
@@ -976,7 +980,7 @@ export interface CloudSSEDoneContextEvent {
 export interface CloudSSEDoneTestsEvent {
   event: 'done';
   feature_summary: string;
-  test_cases: TestCase[];
+  test_cases: CloudTestCase[];
   coverage_notes: string;
 }
 export interface CloudSSEErrorEvent {
@@ -998,7 +1002,7 @@ export interface CloudContextCallbacks {
 
 export interface CloudTestsCallbacks {
   onProgress?: (message: string) => void;
-  onDone?: (featureSummary: string, testCases: TestCase[], coverageNotes: string) => void;
+  onDone?: (featureSummary: string, testCases: CloudTestCase[], coverageNotes: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -1135,7 +1139,8 @@ export async function generateFeatureTests(
   featureId: string,
   projectId: string,
   callbacks: CloudTestsCallbacks,
-  provider: string = 'claude'
+  provider: string = 'claude',
+  userFeedback?: string
 ): Promise<void> {
   const token = useAuthStore.getState().token;
   const response = await streamLocalFetch(`/cloud/feature/${featureId}/generate-tests`, {
@@ -1143,6 +1148,7 @@ export async function generateFeatureTests(
     project_id: projectId,
     token,
     provider,
+    user_feedback: userFeedback || null,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1161,9 +1167,16 @@ export async function generateFeatureTests(
   );
 }
 
+export async function listTestCasesByFeature(featureId: string): Promise<CloudTestCase[]> {
+  const response = await cloudApiClient.get<CloudTestCase[]>(
+    `/api/v1/test-cases/by-feature/${featureId}`
+  );
+  return response.data;
+}
+
 export async function saveFeatureTests(
   featureId: string,
-  testCases: TestCase[]
+  testCases: CloudTestCase[]
 ): Promise<void> {
   const token = useAuthStore.getState().token;
   const baseUrl = await getBaseUrl();

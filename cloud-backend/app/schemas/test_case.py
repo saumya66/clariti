@@ -8,7 +8,6 @@ class TestCaseCreate(BaseModel):
     test_key: str
     title: str
     description: Optional[str] = None
-    steps_text: Optional[str] = None
     goal: str
     expected_result: Optional[str] = None
     priority: Optional[str] = None
@@ -19,7 +18,6 @@ class TestCaseCreate(BaseModel):
 class TestCaseUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    steps_text: Optional[str] = None
     goal: Optional[str] = None
     expected_result: Optional[str] = None
     priority: Optional[str] = None
@@ -32,7 +30,6 @@ class TestCase(BaseModel):
     test_key: str
     title: str
     description: Optional[str] = None
-    steps_text: Optional[str] = None
     goal: str
     expected_result: Optional[str] = None
     priority: Optional[str] = None

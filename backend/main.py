@@ -2548,15 +2548,12 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
         try:
             cloud_tcs = cloud_list_test_cases(request.cloud_feature_id, token=request.cloud_token)
             if cloud_tcs:
-                # Convert cloud format (steps_text) to execute format (steps array)
                 for tc in cloud_tcs:
-                    steps_text = tc.get("steps_text") or ""
-                    steps = [s.strip() for s in steps_text.split("\n") if s.strip()] if steps_text else []
                     test_cases.append({
                         "id": tc["id"],
                         "test_key": tc.get("test_key"),
                         "title": tc.get("title", ""),
-                        "steps": steps,
+                        "steps": [],
                         "expected_result": tc.get("expected_result"),
                         "goal": tc.get("goal"),
                     })
@@ -2647,11 +2644,9 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
             test_title = test_case.get("title", "Unknown Test")
             print(f"[EXECUTE] ===== Test [{test_idx + 1}/{len(test_cases)}]: {test_id} - {test_title} =====")
             
-            steps_text = "\n".join([f"{i+1}. {step}" for i, step in enumerate(test_case.get("steps", []))])
             goal = f"""{test_title}
 
-Steps to execute:
-{steps_text}
+Goal: {test_case.get("goal", "N/A")}
 
 Expected result: {test_case.get("expected_result", "N/A")}"""
             
@@ -3246,66 +3241,6 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     token=request.token,
                 )
 
-            yield f"data: {json.dumps({'event': 'progress', 'message': 'Fetching feature context...'})}\n\n"
-            await asyncio.sleep(0)
-            feature_items = await asyncio.to_thread(cloud_list_context_items, "feature", feature_id, token=request.token)
-
-            yield f"data: {json.dumps({'event': 'progress', 'message': 'Fetching project context...'})}\n\n"
-            await asyncio.sleep(0)
-            project_items = await asyncio.to_thread(cloud_list_context_items, "project", request.project_id, token=request.token)
-
-            yield f"data: {json.dumps({'event': 'progress', 'message': 'Analysing images...'})}\n\n"
-            await asyncio.sleep(0)
-
-            import base64
-            image_agent = ImageContextRetrieverAgent(provider="claude")
-            image_contexts = []
-            feedback_prefix = f"User correction: {request.user_feedback}\n\n" if request.user_feedback else ""
-
-            all_items = feature_items + project_items
-            for item in all_items:
-                if item.get("type") == "image" and item.get("content"):
-                    raw = base64.b64decode(item["content"])
-                    result = await asyncio.to_thread(image_agent.process, raw, feedback_prefix)
-                    if result:
-                        result["_source"] = item.get("filename", "image")
-                        image_contexts.append(result)
-
-            yield f"data: {json.dumps({'event': 'progress', 'message': 'Synthesising context...'})}\n\n"
-            await asyncio.sleep(0)
-
-            # Build structured summary
-            screens = []
-            ui_elements = []
-            text_notes = []
-
-            for ctx in image_contexts:
-                screen_name = ctx.get("screen_title") or ctx.get("screen_type", "Unknown screen")
-                screens.append({"name": screen_name, "source": ctx.get("_source", ""), "description": ctx.get("description", "")})
-                for elem in ctx.get("elements", [])[:10]:
-                    ui_elements.append({"type": elem.get("type", ""), "label": elem.get("label", ""), "location": elem.get("location", "")})
-
-            for item in all_items:
-                if item.get("type") == "text" and item.get("content"):
-                    text_notes.append(item["content"])
-
-            summary = {
-                "screens_detected": screens,
-                "ui_elements": ui_elements,
-                "requirements": [],
-                "user_flows": [],
-                "text_notes": text_notes,
-            }
-
-            # Synthesise a natural-language context_summary
-            context_parts = []
-            for s in screens:
-                context_parts.append(f"Screen '{s['name']}': {s['description']}")
-            for note in text_notes:
-                context_parts.append(f"Note: {note}")
-            if request.user_feedback:
-                context_parts.append(f"User feedback: {request.user_feedback}")
-
             from agents.base_agent import BaseAgent
             class _SynthAgent(BaseAgent):
                 @property
@@ -3322,8 +3257,78 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
-            synth = _SynthAgent(provider="claude")
-            context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
+            summary = {"screens_detected": [], "ui_elements": [], "requirements": [], "user_flows": [], "text_notes": []}
+
+            if request.user_feedback:
+                # ── Feedback rebuild: skip image re-analysis, refine existing summary ──
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Fetching existing context...'})}\n\n"
+                await asyncio.sleep(0)
+
+                from cloud_client import get_feature as cloud_get_feature
+                existing_feature = await asyncio.to_thread(cloud_get_feature, feature_id, token=request.token)
+                existing_summary = (existing_feature or {}).get("context_summary", "") or ""
+
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Refining context with your feedback...'})}\n\n"
+                await asyncio.sleep(0)
+
+                refine_prompt = (
+                    f"Existing context summary:\n{existing_summary}\n\n"
+                    f"User correction: {request.user_feedback}\n\n"
+                    "Rewrite the context summary incorporating the user's correction. "
+                    "Keep all accurate information from the existing summary."
+                )
+
+                synth = _SynthAgent(provider="claude")
+                context_summary = await asyncio.to_thread(synth.synthesise, refine_prompt)
+
+            else:
+                # ── First build: full image analysis + synthesis ──
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Fetching feature context...'})}\n\n"
+                await asyncio.sleep(0)
+                feature_items = await asyncio.to_thread(cloud_list_context_items, "feature", feature_id, token=request.token)
+
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Fetching project context...'})}\n\n"
+                await asyncio.sleep(0)
+                project_items = await asyncio.to_thread(cloud_list_context_items, "project", request.project_id, token=request.token)
+
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Analysing images...'})}\n\n"
+                await asyncio.sleep(0)
+
+                import base64
+                image_agent = ImageContextRetrieverAgent(provider="claude")
+                image_contexts = []
+                all_items = feature_items + project_items
+                for item in all_items:
+                    if item.get("type") == "image" and item.get("content"):
+                        raw = base64.b64decode(item["content"])
+                        result = await asyncio.to_thread(image_agent.process, raw, "")
+                        if result:
+                            result["_source"] = item.get("filename", "image")
+                            image_contexts.append(result)
+
+                yield f"data: {json.dumps({'event': 'progress', 'message': 'Synthesising context...'})}\n\n"
+                await asyncio.sleep(0)
+
+                screens, ui_elements, text_notes = [], [], []
+                for ctx in image_contexts:
+                    screen_name = ctx.get("screen_title") or ctx.get("screen_type", "Unknown screen")
+                    screens.append({"name": screen_name, "source": ctx.get("_source", ""), "description": ctx.get("description", "")})
+                    for elem in ctx.get("elements", [])[:10]:
+                        ui_elements.append({"type": elem.get("type", ""), "label": elem.get("label", ""), "location": elem.get("location", "")})
+                for item in all_items:
+                    if item.get("type") == "text" and item.get("content"):
+                        text_notes.append(item["content"])
+
+                summary = {"screens_detected": screens, "ui_elements": ui_elements, "requirements": [], "user_flows": [], "text_notes": text_notes}
+
+                context_parts = []
+                for s in screens:
+                    context_parts.append(f"Screen '{s['name']}': {s['description']}")
+                for note in text_notes:
+                    context_parts.append(f"Note: {note}")
+
+                synth = _SynthAgent(provider="claude")
+                context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving context...'})}\n\n"
             await asyncio.sleep(0)
@@ -3357,22 +3362,10 @@ async def cloud_save_feature_tests(feature_id: str, request: SaveFeatureTestsReq
     """
     Save approved test cases to the cloud backend.
     Deletes any existing test cases for this feature first, then bulk-inserts.
+    Test cases arrive already in cloud schema format — just inject feature_id.
     """
-    cloud_tests = []
-    for tc in request.test_cases:
-        cloud_tests.append({
-            "feature_id": feature_id,
-            "test_key": tc.get("id", f"TC-{len(cloud_tests)+1:03d}"),
-            "title": tc.get("name") or tc.get("title", "Untitled"),
-            "description": tc.get("description"),
-            "steps_text": "\n".join(tc.get("steps", [])) if isinstance(tc.get("steps"), list) else tc.get("steps_text"),
-            "goal": tc.get("description") or tc.get("name") or "Test execution",
-            "expected_result": tc.get("expected_result"),
-            "priority": tc.get("priority"),
-            "category": tc.get("category"),
-        })
-
-    saved = cloud_save_test_cases_bulk(feature_id, cloud_tests, token=request.token)
+    cloud_tests = [{"feature_id": feature_id, **tc} for tc in request.test_cases]
+    saved = await asyncio.to_thread(cloud_save_test_cases_bulk, feature_id, cloud_tests, request.token)
     return {"ok": True, "saved": len(saved)}
 
 
@@ -3381,6 +3374,7 @@ class GenerateFeatureTestsRequest(BaseModel):
     feature_id: str
     token: str
     provider: str = "claude"
+    user_feedback: Optional[str] = None
 
 
 @app.post("/cloud/feature/{feature_id}/generate-tests")
@@ -3420,6 +3414,7 @@ async def cloud_generate_feature_tests(feature_id: str, request: GenerateFeature
                 "description": (feature or {}).get("description", ""),
                 "context_summary": feature_context,
                 "project_context": project_context,
+                "user_feedback": request.user_feedback or "",
                 "items": [],
             }
             test_plan = await asyncio.to_thread(planner.generate_from_feature_context, combined_context)

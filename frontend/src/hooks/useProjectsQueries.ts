@@ -10,14 +10,24 @@ import {
   updateProject,
   deleteProject,
   createProjectWithContext,
+  createCloudFeature,
   listFeaturesByProject,
   listProjectContextItems,
+  listTestCasesByFeature,
+  buildFeatureContext,
+  generateFeatureTests,
+  saveFeatureTests,
+  updateProjectContext,
+  type CloudContextUpdateCallbacks,
   type Project,
   type Feature,
   type CloudContextItem,
+  type CloudTestCase,
   type ProjectCreateInput,
   type ProjectUpdateInput,
   type CloudProjectCallbacks,
+  type CloudContextCallbacks,
+  type CloudTestsCallbacks,
 } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
 
@@ -213,4 +223,104 @@ export function useProjectContextItems(projectId: string | undefined) {
     error: error?.message ?? null,
     refetch,
   };
+}
+
+export function testCasesQueryKey(featureId: string) {
+  return ['features', featureId, 'test-cases'] as const;
+}
+
+export function useFeatureTestCases(featureId: string | undefined) {
+  const token = useAuthStore((s) => s.token);
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: testCasesQueryKey(featureId ?? ''),
+    queryFn: () => listTestCasesByFeature(featureId!),
+    enabled: !!token && !!featureId,
+  });
+
+  return {
+    testCases: (data ?? []) as CloudTestCase[],
+    loading: isLoading,
+    error: error?.message ?? null,
+    refetch,
+  };
+}
+
+export function useCreateFeature(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, description }: { name: string; description?: string }) =>
+      createCloudFeature(projectId, name, description),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: featuresQueryKey(projectId) });
+    },
+  });
+}
+
+export function useBuildFeatureContext() {
+  return useMutation({
+    mutationFn: ({
+      featureId,
+      projectId,
+      userFeedback,
+      callbacks,
+      images,
+      texts,
+    }: {
+      featureId: string;
+      projectId: string;
+      userFeedback?: string;
+      callbacks: CloudContextCallbacks;
+      images?: File[];
+      texts?: string[];
+    }) => buildFeatureContext(featureId, projectId, userFeedback, callbacks, images, texts),
+  });
+}
+
+export function useGenerateFeatureTests() {
+  return useMutation({
+    mutationFn: ({
+      featureId,
+      projectId,
+      callbacks,
+      provider,
+      userFeedback,
+    }: {
+      featureId: string;
+      projectId: string;
+      callbacks: CloudTestsCallbacks;
+      provider?: string;
+      userFeedback?: string;
+    }) => generateFeatureTests(featureId, projectId, callbacks, provider, userFeedback),
+  });
+}
+
+export function useSaveFeatureTests(featureId: string | null, projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (testCases: CloudTestCase[]) => saveFeatureTests(featureId!, testCases),
+    onSuccess: () => {
+      if (featureId) queryClient.invalidateQueries({ queryKey: testCasesQueryKey(featureId) });
+      if (projectId) queryClient.invalidateQueries({ queryKey: featuresQueryKey(projectId) });
+    },
+  });
+}
+
+export function useUpdateProjectContext(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      images,
+      texts,
+      callbacks,
+    }: {
+      images: File[];
+      texts: string[];
+      callbacks: CloudContextUpdateCallbacks;
+    }) => updateProjectContext(projectId, images, texts, callbacks),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId) });
+      queryClient.invalidateQueries({ queryKey: contextItemsQueryKey(projectId) });
+    },
+  });
 }

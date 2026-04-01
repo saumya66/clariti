@@ -32,10 +32,9 @@ import {
 import {
   useProject,
   useProjectContextItems,
-  projectQueryKey,
+  useUpdateProjectContext,
 } from '@/hooks/useProjectsQueries';
 import { updateProjectContext, type CloudContextItem } from '@/api/client';
-import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 
 export const Route = createFileRoute('/app/projects/$projectId/context')({
@@ -89,6 +88,7 @@ function ProjectContextModal({
   existingTexts,
   onSuccess,
 }: ProjectContextModalProps) {
+  const updateContextMutation = useUpdateProjectContext(projectId);
   const [images, setImages] = React.useState<StagedImage[]>([]);
   const [texts, setTexts] = React.useState<string[]>(['']);
   const [isDragging, setIsDragging] = React.useState(false);
@@ -178,15 +178,19 @@ function ProjectContextModal({
 
       const textValues = texts.filter((t) => t.trim().length > 0);
 
-      await updateProjectContext(projectId, imageFiles, textValues, {
-        onProgress: (msg) => setProgressMessages((prev) => [...prev, msg]),
-        onDone: () => {
-          onSuccess();
-          onOpenChange(false);
-        },
-        onError: (msg) => {
-          setErrorMessage(msg);
-          setIsSubmitting(false);
+      await updateContextMutation.mutateAsync({
+        images: imageFiles,
+        texts: textValues,
+        callbacks: {
+          onProgress: (msg) => setProgressMessages((prev) => [...prev, msg]),
+          onDone: () => {
+            onSuccess();
+            onOpenChange(false);
+          },
+          onError: (msg) => {
+            setErrorMessage(msg);
+            setIsSubmitting(false);
+          },
         },
       });
     } catch (err) {
@@ -369,9 +373,9 @@ function ProjectContextModal({
 
 function ProjectContextPage() {
   const { projectId } = Route.useParams();
-  const queryClient = useQueryClient();
-  const { project, refetch: refetchProject } = useProject(projectId);
+  const { project } = useProject(projectId);
   const { contextItems, loading: itemsLoading } = useProjectContextItems(projectId);
+  const updateContextMutation = useUpdateProjectContext(projectId);
   const [modalOpen, setModalOpen] = React.useState(false);
 
   if (!project) return null;
@@ -380,8 +384,7 @@ function ProjectContextPage() {
   const existingTexts = contextItems.filter((i) => i.type === 'text');
 
   function handleContextSuccess() {
-    queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId) });
-    refetchProject();
+    // cache invalidation is handled automatically by useUpdateProjectContext onSuccess
   }
 
   const hasContext = !!project.context_summary;

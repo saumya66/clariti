@@ -153,68 +153,69 @@ function ProjectBentoPage() {
           </div>
         </div>
 
-        {/* ── Test Suites list card ── */}
+        {/* ── Test Suites card ── */}
         <button
           onClick={() => router.navigate({ to: '/app/projects/$projectId/tests', params: { projectId } })}
           className="group col-span-1 flex flex-col rounded-2xl border border-border bg-card p-5 text-left transition-all hover:border-primary/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <div className="mb-4 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-auto">
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
                 <FlaskConical className="size-4 text-primary" />
               </div>
-              <div>
-                <h2 className="text-sm font-semibold text-foreground">Test Suites</h2>
-                <p className="text-xs text-muted-foreground">
-                  {featuresLoading ? 'Loading…' : `${features.length} suite${features.length !== 1 ? 's' : ''}`}
-                </p>
-              </div>
+              <h2 className="text-sm font-semibold text-foreground">Test Suites</h2>
             </div>
-            <div className="flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-              View all <ArrowUpRight className="size-3.5" />
-            </div>
+            <ChevronRight className="size-4 text-muted-foreground/40 group-hover:text-primary transition-colors" />
           </div>
 
           {featuresLoading ? (
-            <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-9 animate-pulse rounded-lg bg-muted" />
-              ))}
+            <div className="flex flex-1 items-center justify-center py-8">
+              <div className="h-12 w-20 animate-pulse rounded-lg bg-muted" />
             </div>
-          ) : previewFeatures.length > 0 ? (
-            <div className="space-y-1">
-              {previewFeatures.map((f: Feature) => (
-                <div key={f.id} className="flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-muted/50">
-                  <FeatureStatusDot status={f.status} />
-                  <span className="flex-1 truncate text-sm text-foreground">{f.name}</span>
-                  <span className={cn(
-                    'rounded-full px-2 py-0.5 text-[10px] font-medium capitalize',
-                    f.status === 'context_ready' || f.status === 'tests_generated'
-                      ? 'bg-emerald-500/10 text-emerald-600'
-                      : 'bg-muted text-muted-foreground'
-                  )}>
-                    {f.status?.replace('_', ' ') ?? 'pending'}
-                  </span>
-                </div>
-              ))}
-              {features.length > 5 && (
-                <p className="px-3 pt-1 text-xs text-muted-foreground">
-                  +{features.length - 5} more
-                </p>
-              )}
-            </div>
+          ) : features.length > 0 ? (
+            <>
+              {/* Big number — right-aligned decorative stat */}
+              <div className="flex flex-col items-end flex-1 py-4 pt-8" style={{ textAlign: 'right' }}>
+                <span className="text-8xl font-black text-foreground/90 tabular-nums leading-none tracking-tighter">
+                  {features.length}
+                </span>
+                <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mt-1">
+                  suite{features.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              {/* Status breakdown */}
+              {(() => {
+                const ready = features.filter((f: Feature) => f.status === 'context_ready' || f.status === 'tests_generated').length;
+                const pending = features.length - ready;
+                return (
+                  <div className="flex items-center justify-end gap-2 flex-wrap mt-1">
+                    {ready > 0 && (
+                      <span className="text-[11px] font-medium text-emerald-600 bg-emerald-500/10 rounded-full px-2.5 py-0.5">
+                        {ready} ready
+                      </span>
+                    )}
+                    {pending > 0 && (
+                      <span className="text-[11px] font-medium text-muted-foreground bg-muted rounded-full px-2.5 py-0.5">
+                        {pending} pending
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+            </>
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center">
               <div className="flex size-10 items-center justify-center rounded-xl bg-muted">
                 <FlaskConical className="size-5 text-muted-foreground" />
               </div>
               <div>
-                <p className="text-sm font-medium text-foreground">No test suites yet</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">Create your first test suite to get started.</p>
+                <p className="text-sm font-medium text-foreground">No suites yet</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Create your first to get started.</p>
               </div>
               <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setCreateTestOpen(true); }}>
                 <Plus className="size-3.5" />
-                New Test Suite
+                New Suite
               </Button>
             </div>
           )}
@@ -267,8 +268,8 @@ function ProjectBentoPage() {
 
       {/* New Test Suite Dialog */}
       <Dialog open={createTestOpen} onOpenChange={setCreateTestOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] w-[95vw] overflow-hidden flex flex-col p-0">
-          <div className="flex-1 overflow-y-auto min-h-0">
+        <DialogContent className="max-w-4xl max-h-[88vh] min-h-[540px] w-[95vw] overflow-hidden flex flex-col p-0">
+          <div className="flex flex-1 min-h-0 overflow-hidden">
             <CreateTestFlow onClose={() => setCreateTestOpen(false)} projectId={projectId} />
           </div>
         </DialogContent>

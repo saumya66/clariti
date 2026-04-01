@@ -1,10 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   Plus,
+  X,
   Image,
   MessageSquare,
-  Trash2,
-  CheckCircle,
   AlertCircle,
   Loader,
   ArrowRight,
@@ -12,13 +11,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Eye,
-  Layers,
-  Layout,
-  ListChecks,
 } from 'lucide-react';
 import {
-  createFeatureContext,
   createCloudFeature,
   addImageToContext,
   addTextToContext,
@@ -30,10 +24,18 @@ import {
   saveFeatureTests,
   type BuildContextResponse,
   type TestPlanResponse,
-  type TestCase,
+  type CloudTestCase,
   type ContextSummary,
 } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
+import { cn } from '@/lib/utils';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  useCreateFeature,
+  useBuildFeatureContext,
+  useGenerateFeatureTests,
+  useSaveFeatureTests,
+} from '@/hooks/useProjectsQueries';
 
 type Step = 'create' | 'select' | 'summary' | 'review';
 
@@ -53,6 +55,7 @@ interface TextNote {
 interface ContextResult {
   featureName: string;
   summary: ContextSummary;
+  contextSummaryText?: string;
   processedItems?: BuildContextResponse['processed_items'];
   hasFeedback?: boolean;
 }
@@ -86,6 +89,8 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
   const [contextResult, setContextResult] = useState<ContextResult | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [userFeedback, setUserFeedback] = useState('');
+  const [testFeedback, setTestFeedback] = useState('');
+  const [showTestFeedback, setShowTestFeedback] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
 
   // Step 4 — test generation + review
@@ -98,6 +103,21 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
 
   const [step, setStep] = useState<Step>('create');
 
+  // Image preview URLs (revoked on unmount)
+  const thumbnailUrls = React.useMemo(
+    () => localFiles.map((f) => URL.createObjectURL(f.file)),
+    [localFiles]
+  );
+  React.useEffect(() => {
+    return () => thumbnailUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [thumbnailUrls]);
+
+  // Cloud mutations — hooks must be at top level, params update on re-render
+  const createFeatureMutation = useCreateFeature(projectId ?? '');
+  const buildContextMutation = useBuildFeatureContext();
+  const generateTestsMutation = useGenerateFeatureTests();
+  const saveTestsMutation = useSaveFeatureTests(cloudFeatureId, projectId);
+
   // =========================================================================
   // Step 1: Create Feature
   // =========================================================================
@@ -107,14 +127,13 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
     setCreateError(null);
     try {
       if (isCloudMode) {
-        // Cloud mode: create local context stub + cloud feature in parallel
-        const [localResult, cloudFeature] = await Promise.all([
-          createFeatureContext({ name: featureName, description: featureDescription }),
-          createCloudFeature(projectId!, featureName, featureDescription || undefined),
-        ]);
-        setContextId(localResult.context_id);
+        const cloudFeature = await createFeatureMutation.mutateAsync({
+          name: featureName,
+          description: featureDescription || undefined,
+        });
         setCloudFeatureId(cloudFeature.id);
       } else {
+        const { createFeatureContext } = await import('@/api/client');
         const result = await createFeatureContext({
           name: featureName,
           description: featureDescription,
@@ -173,16 +192,17 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
     try {
       if (isCloudMode && cloudFeatureId) {
         // Cloud flow — send images+texts to local backend which saves to cloud + runs AI
-        await buildFeatureContext(
-          cloudFeatureId,
-          projectId!,
-          feedback || undefined,
-          {
+        await buildContextMutation.mutateAsync({
+          featureId: cloudFeatureId,
+          projectId: projectId!,
+          userFeedback: feedback || undefined,
+          callbacks: {
             onProgress: (msg) => setProgressMessage(msg),
             onDone: (summary, contextSummaryText) => {
               setContextResult({
                 featureName,
                 summary,
+                contextSummaryText,
                 hasFeedback: !!feedback,
               });
               setProgressMessage('');
@@ -191,9 +211,9 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
             },
             onError: (msg) => setBuildError(msg),
           },
-          rebuilding ? undefined : localFiles.map((lf) => lf.file),
-          rebuilding ? undefined : textNotes.map((n) => n.text),
-        );
+          images: rebuilding ? undefined : localFiles.map((lf) => lf.file),
+          texts: rebuilding ? undefined : textNotes.map((n) => n.text),
+        });
       } else if (contextId) {
         // Local-only flow (legacy)
         if (!feedback) {
@@ -222,19 +242,19 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
   // =========================================================================
   // Step 3→4: Generate Test Cases
   // =========================================================================
-  const handleGenerateTests = async () => {
+  const handleGenerateTests = async (feedback = '') => {
     setIsGenerating(true);
     setGenerationError(null);
 
     try {
       if (isCloudMode && cloudFeatureId) {
-        await generateFeatureTests(
-          cloudFeatureId,
-          projectId!,
-          {
+        await generateTestsMutation.mutateAsync({
+          featureId: cloudFeatureId,
+          projectId: projectId!,
+          userFeedback: feedback || undefined,
+          callbacks: {
             onProgress: (msg) => setProgressMessage(msg),
             onDone: (featureSummary, testCases, coverageNotes) => {
-              // Normalise into TestPlanResponse shape
               setTestPlan({
                 success: true,
                 context_id: cloudFeatureId,
@@ -246,17 +266,19 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
                 status: 'pending_review',
                 message: '',
               });
-              setSelectedTests(new Set(testCases.map((tc) => tc.id)));
-              setStep('review');
+              setSelectedTests(new Set(testCases.map((tc) => tc.test_key)));
+              if (step !== 'review') setStep('review');
               setProgressMessage('');
+              setTestFeedback('');
+              setShowTestFeedback(false);
             },
             onError: (msg) => setGenerationError(msg),
           },
-        );
+        });
       } else if (contextId) {
         const result = await generateTestPlan(contextId);
         setTestPlan(result);
-        setSelectedTests(new Set(result.test_cases.map((tc) => tc.id)));
+        setSelectedTests(new Set(result.test_cases.map((tc) => tc.test_key)));
         setStep('review');
       }
     } catch (err) {
@@ -274,9 +296,9 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
     if (!testPlan || selectedTests.size === 0) return;
     setIsApproving(true);
     try {
-      const approvedCases = testPlan.test_cases.filter((tc) => selectedTests.has(tc.id));
+      const approvedCases = testPlan.test_cases.filter((tc) => selectedTests.has(tc.test_key));
       if (isCloudMode && cloudFeatureId) {
-        await saveFeatureTests(cloudFeatureId, approvedCases);
+        await saveTestsMutation.mutateAsync(approvedCases);
       } else if (contextId) {
         await approveAndGenerateTests(contextId, Array.from(selectedTests));
       }
@@ -307,615 +329,550 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
     });
   };
 
-  const getPriorityColor = (priority: string) => {
+  const getPriorityColor = (priority: string | null | undefined) => {
     switch (priority) {
-      case 'must': return 'text-red-400 bg-red-500/10 border-red-500/30';
-      case 'should': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
-      case 'could': return 'text-green-400 bg-green-500/10 border-green-500/30';
+      case 'critical': return 'text-red-400 bg-red-500/10 border-red-500/30';
+      case 'high': return 'text-orange-400 bg-orange-500/10 border-orange-500/30';
+      case 'medium': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+      case 'low': return 'text-green-400 bg-green-500/10 border-green-500/30';
       default: return 'text-muted-foreground bg-muted border-border';
     }
   };
 
   const getCategoryColor = (category: string) => {
     switch (category) {
-      case 'happy_path': return 'text-green-400 bg-green-500/10';
-      case 'edge_case': return 'text-amber-400 bg-amber-500/10';
-      case 'error_handling': return 'text-red-400 bg-red-500/10';
-      case 'validation': return 'text-purple-400 bg-purple-500/10';
-      case 'ui_ux': return 'text-primary bg-primary/10';
-      default: return 'text-muted-foreground bg-muted';
+      case 'functional': return 'bg-blue-500/10 text-blue-500';
+      case 'negative': return 'bg-red-500/10 text-red-400';
+      case 'ui': return 'bg-purple-500/10 text-purple-400';
+      case 'edge_case': return 'bg-amber-500/10 text-amber-500';
+      case 'accessibility': return 'bg-teal-500/10 text-teal-500';
+      default: return 'bg-muted text-muted-foreground';
     }
   };
 
   const totalAssets = localFiles.length + textNotes.length;
 
+  const STEPS = [
+    { key: 'create',  label: 'Name',    desc: 'Name your test suite' },
+    { key: 'select',  label: 'Assets',  desc: 'Upload screenshots & notes' },
+    { key: 'summary', label: 'Context', desc: 'Review AI understanding' },
+    { key: 'review',  label: 'Review',  desc: 'Select & save tests' },
+  ] as const;
+
+  const stepOrder = STEPS.map((s) => s.key);
+  const currentIdx = stepOrder.indexOf(step);
+
   // =========================================================================
   // Render
   // =========================================================================
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-8">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-foreground mb-2">Create Test Suite</h1>
-          <p className="text-muted-foreground">
-            Upload designs and notes to generate AI-powered test cases
-          </p>
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+
+      {/* ── Left sidebar ──────────────────────────────────────────── */}
+      <div className="w-52 shrink-0 flex flex-col border-r border-border bg-muted/20 p-5 gap-0">
+
+        {/* Brand */}
+        <div className="flex items-center gap-2.5 mb-8">
+          <div className="size-8 rounded-lg bg-primary flex items-center justify-center shadow-sm shrink-0">
+            <Sparkles className="size-4 text-primary-foreground" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground leading-none">AutoQA</p>
+            <p className="text-sm font-semibold text-foreground leading-snug">New Suite</p>
+          </div>
         </div>
 
-        {/* Step Indicator */}
-        <div className="flex items-center gap-2 mb-8 overflow-x-auto pb-2">
-          {[
-            { key: 'create', label: 'Name', icon: '1' },
-            { key: 'select', label: 'Select Assets', icon: '2' },
-            { key: 'summary', label: 'Review Context', icon: '3' },
-            { key: 'review', label: 'Review & Save', icon: '4' },
-          ].map((s, idx) => {
-            const stepOrder = ['create', 'select', 'summary', 'review'];
-            const currentIdx = stepOrder.indexOf(step);
-            const thisIdx = stepOrder.indexOf(s.key);
-            const isCompleted = thisIdx < currentIdx;
+        {/* Steps */}
+        <div>
+          {STEPS.map((s, idx) => {
+            const isCompleted = idx < currentIdx;
             const isCurrent = s.key === step;
             return (
-              <React.Fragment key={s.key}>
-                {idx > 0 && <ArrowRight className="w-4 h-4 text-border shrink-0" />}
-                <div className={`flex items-center gap-2 shrink-0 ${isCurrent ? 'text-primary' : isCompleted ? 'text-green-600' : 'text-muted-foreground'}`}>
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium ${isCurrent ? 'bg-primary/20 text-primary' : isCompleted ? 'bg-green-500/20 text-green-600' : 'bg-muted text-muted-foreground'}`}>
-                    {isCompleted ? '✓' : s.icon}
+              <div key={s.key} className="flex items-start gap-3">
+                <div className="flex flex-col items-center">
+                  <div className={cn(
+                    'size-5 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 transition-all mt-0.5',
+                    isCurrent  ? 'bg-primary text-primary-foreground ring-2 ring-primary/20' :
+                    isCompleted ? 'bg-green-500 text-white' :
+                                  'bg-muted text-muted-foreground border border-border'
+                  )}>
+                    {isCompleted ? <Check className="size-3" /> : <span>{idx + 1}</span>}
                   </div>
-                  <span className="text-sm font-medium whitespace-nowrap">{s.label}</span>
+                  {idx < STEPS.length - 1 && (
+                    <div className={cn('w-px my-1', 'h-8', isCompleted ? 'bg-green-500/30' : 'bg-border')} />
+                  )}
                 </div>
-              </React.Fragment>
+                <div className={cn('pb-4', idx === STEPS.length - 1 && 'pb-0')}>
+                  <p className={cn(
+                    'text-sm font-medium leading-none mt-0.5',
+                    isCurrent  ? 'text-foreground' :
+                    isCompleted ? 'text-muted-foreground' : 'text-muted-foreground/50'
+                  )}>
+                    {s.label}
+                  </p>
+                  {isCurrent && (
+                    <p className="text-xs text-muted-foreground mt-1 leading-snug">{s.desc}</p>
+                  )}
+                </div>
+              </div>
             );
           })}
         </div>
 
-        {/* ================================================
-            Step 1: Feature Name
-        ================================================ */}
-        {step === 'create' && (
-          <div className="bg-card rounded-xl p-6 border border-border">
-            <h2 className="text-lg font-semibold text-foreground mb-4">Feature Details</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  Feature Name *
-                </label>
-                <input
-                  type="text"
-                  value={featureName}
-                  onChange={(e) => setFeatureName(e.target.value)}
-                  placeholder="e.g., Add to Bag, User Login, Checkout Flow"
-                  className="w-full px-4 py-3 bg-background border border-input rounded-lg text-foreground placeholder-muted-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  Description (Optional)
-                </label>
-                <textarea
-                  value={featureDescription}
-                  onChange={(e) => setFeatureDescription(e.target.value)}
-                  placeholder="Brief description of what this feature does..."
-                  rows={3}
-                  className="w-full px-4 py-3 bg-background border border-input rounded-lg text-foreground placeholder-muted-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring resize-none"
-                />
+        {/* Feature info card (shown once name is set) */}
+        {featureName && step !== 'create' && (
+          <div className="mt-auto pt-4">
+            <div className="rounded-lg border border-border bg-card/60 p-3">
+              <p className="text-xs text-muted-foreground mb-0.5">Suite</p>
+              <p className="text-sm font-medium text-foreground truncate">{featureName}</p>
+              {featureDescription && (
+                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{featureDescription}</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Right content ─────────────────────────────────────────── */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="p-6 max-w-lg">
+
+          {/* ──────────── Step 1: Name ──────────── */}
+          {step === 'create' && (
+            <div>
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-foreground">Name your test suite</h2>
+                <p className="text-sm text-muted-foreground mt-1">Give this suite a name that reflects the feature you're testing.</p>
               </div>
 
-              {createError && (
-                <div className="bg-destructive/10 rounded-lg p-3 flex items-center gap-2 text-sm text-destructive">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  {createError}
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Feature name <span className="text-destructive">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={featureName}
+                    onChange={(e) => setFeatureName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && featureName.trim() && !isCreating && handleCreateContext()}
+                    placeholder="e.g. Add to Bag, User Login, Checkout Flow"
+                    className="w-full px-3.5 py-2.5 bg-card border border-input rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors text-sm"
+                  />
                 </div>
-              )}
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Description <span className="text-xs text-muted-foreground font-normal">(optional)</span>
+                  </label>
+                  <textarea
+                    value={featureDescription}
+                    onChange={(e) => setFeatureDescription(e.target.value)}
+                    placeholder="What does this feature do? Any specific behaviors to test?"
+                    rows={3}
+                    className="w-full px-3.5 py-2.5 bg-card border border-input rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors text-sm resize-none"
+                  />
+                </div>
+                {createError && (
+                  <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2.5">
+                    <AlertCircle className="size-4 shrink-0" />
+                    {createError}
+                  </div>
+                )}
+              </div>
 
               <button
                 onClick={handleCreateContext}
                 disabled={!featureName.trim() || isCreating}
-                className="w-full py-3 bg-primary hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground text-primary-foreground font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                className="mt-6 w-full py-2.5 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2"
               >
                 {isCreating ? (
-                  <><Loader className="w-4 h-4 animate-spin" /> Creating...</>
+                  <><Loader className="size-4 animate-spin" /> Creating suite…</>
                 ) : (
-                  <>Continue <ArrowRight className="w-4 h-4" /></>
+                  <>Continue <ArrowRight className="size-4" /></>
                 )}
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ================================================
-            Step 2: Select Assets
-        ================================================ */}
-        {step === 'select' && (
-          <div className="space-y-6">
-            {/* Feature info pill */}
-            <div className="bg-muted/50 rounded-lg p-4 border border-border flex items-center justify-between">
-              <div>
-                <h3 className="text-foreground font-medium">{featureName}</h3>
-                {featureDescription && (
-                  <p className="text-sm text-muted-foreground mt-0.5">{featureDescription}</p>
-                )}
+          {/* ──────────── Step 2: Assets ──────────── */}
+          {step === 'select' && (
+            <div>
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-foreground">Add context</h2>
+                <p className="text-sm text-muted-foreground mt-1">Upload screenshots or add text notes. AI uses these to generate relevant test cases.</p>
               </div>
-              {isCloudMode && (
-                <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">Cloud</span>
-              )}
-            </div>
 
-            {/* Upload cards */}
-            <div className="grid grid-cols-2 gap-4">
-              {/* Images */}
-              <label className="group bg-card rounded-xl p-6 border border-border border-dashed hover:border-primary/50 hover:bg-muted/50 cursor-pointer transition-all">
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => handleFileSelect(e.target.files)}
-                />
-                <div className="flex flex-col items-center text-center">
-                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-3 group-hover:bg-primary/20 transition-colors">
-                    <Image className="w-6 h-6 text-primary" />
+              {/* Image upload zone */}
+              <label className="block mb-4 cursor-pointer">
+                <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFileSelect(e.target.files)} />
+                {localFiles.length === 0 ? (
+                  <div className="rounded-xl border-2 border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-all p-8">
+                    <div className="flex flex-col items-center text-center">
+                      <div className="size-10 rounded-xl bg-primary/10 flex items-center justify-center mb-3">
+                        <Image className="size-5 text-primary" />
+                      </div>
+                      <p className="text-sm font-medium text-foreground">Drop screenshots here</p>
+                      <p className="text-xs text-muted-foreground mt-1">or click to browse · PNG, JPG, WebP · max 10 MB</p>
+                    </div>
                   </div>
-                  <h3 className="text-foreground font-medium mb-1">Images</h3>
-                  <p className="text-xs text-muted-foreground">Screenshots, mockups, wireframes</p>
-                  <p className="text-xs text-muted-foreground mt-1">Max 10 MB each</p>
-                </div>
+                ) : (
+                  <div className="rounded-xl border border-border hover:border-primary/30 transition-all p-3">
+                    <div className="grid grid-cols-5 gap-2 mb-2">
+                      {localFiles.map((file, idx) => (
+                        <div key={file.id} className="relative group aspect-square">
+                          <img
+                            src={thumbnailUrls[idx]}
+                            alt={file.name}
+                            className="w-full h-full object-cover rounded-lg border border-border"
+                          />
+                          <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); handleRemoveFile(file.id); }}
+                            className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center shadow-sm"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </div>
+                      ))}
+                      <div className="aspect-square border-2 border-dashed border-border rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors">
+                        <Plus className="size-4" />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground text-center">
+                      {localFiles.length} image{localFiles.length !== 1 ? 's' : ''} · click to add more
+                    </p>
+                  </div>
+                )}
               </label>
 
-              {/* Text */}
-              <div className="bg-card rounded-xl p-6 border border-border">
-                <div className="flex flex-col items-center text-center mb-4">
-                  <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center mb-3">
-                    <MessageSquare className="w-6 h-6 text-amber-400" />
-                  </div>
-                  <h3 className="text-foreground font-medium mb-1">Text</h3>
-                  <p className="text-xs text-muted-foreground">Requirements, descriptions, notes</p>
-                </div>
-                <textarea
-                  value={currentTextNote}
-                  onChange={(e) => setCurrentTextNote(e.target.value)}
-                  placeholder="Describe expected behavior, edge cases..."
-                  rows={2}
-                  className="w-full px-3 py-2 bg-background border border-input rounded-lg text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-ring resize-none mb-2"
-                />
-                <button
-                  onClick={handleAddTextNote}
-                  disabled={!currentTextNote.trim()}
-                  className="w-full py-2 bg-muted hover:bg-muted/80 disabled:opacity-50 text-foreground text-sm rounded-lg transition-colors flex items-center justify-center gap-2"
-                >
-                  <Plus className="w-4 h-4" /> Add Note
-                </button>
-              </div>
-            </div>
-
-            {/* Asset list */}
-            {totalAssets > 0 && (
-              <div className="bg-card rounded-xl border border-border">
-                <div className="p-4 border-b border-border flex items-center justify-between">
-                  <h3 className="text-foreground font-medium">Selected Assets ({totalAssets})</h3>
-                  <span className="text-xs text-muted-foreground">
-                    {isCloudMode ? 'Will upload to cloud on next step' : 'Not uploaded yet'}
-                  </span>
-                </div>
-                <div className="divide-y divide-border">
-                  {localFiles.map((file) => (
-                    <div key={file.id} className="p-4 flex items-center gap-4">
-                      <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground">
-                        <Image className="w-4 h-4" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-foreground text-sm font-medium truncate">{file.name}</p>
-                        <p className="text-muted-foreground text-xs">
-                          {(file.file.size / 1024 / 1024).toFixed(1)} MB
-                        </p>
-                      </div>
-                      <button onClick={() => handleRemoveFile(file.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                  {textNotes.map((note) => (
-                    <div key={note.id} className="p-4 flex items-center gap-4">
-                      <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground">
-                        <MessageSquare className="w-4 h-4" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-foreground text-sm truncate">{note.text}</p>
-                        <p className="text-muted-foreground text-xs">Text note</p>
-                      </div>
-                      <button onClick={() => handleRemoveTextNote(note.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {buildError && (
-              <div className="bg-red-500/10 rounded-xl p-4 border border-red-500/30 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-red-400 text-sm">{buildError}</p>
-              </div>
-            )}
-
-            {/* Progress message during SSE */}
-            {isBuilding && progressMessage && (
-              <div className="bg-primary/5 rounded-xl p-4 border border-primary/20 flex items-center gap-3">
-                <Loader className="w-4 h-4 animate-spin text-primary shrink-0" />
-                <p className="text-sm text-primary">{progressMessage}</p>
-              </div>
-            )}
-
-            <button
-              onClick={() => handleBuildContext()}
-              disabled={totalAssets === 0 || isBuilding}
-              className="w-full py-4 bg-linear-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary disabled:from-muted disabled:to-muted disabled:text-muted-foreground text-primary-foreground font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/25"
-            >
-              {isBuilding ? (
-                <><Loader className="w-5 h-5 animate-spin" /> {progressMessage || 'Processing...'}</>
-              ) : (
-                <><Sparkles className="w-5 h-5" /> Generate Context ({totalAssets} assets) <ArrowRight className="w-5 h-5" /></>
-              )}
-            </button>
-          </div>
-        )}
-
-        {/* ================================================
-            Step 3: Review Context
-        ================================================ */}
-        {step === 'summary' && contextResult && (
-          <div className="space-y-6">
-            {/* Status pill */}
-            <div className="bg-card/50 rounded-lg p-4 border border-border flex items-center justify-between">
-              <div>
-                <h3 className="text-foreground font-medium">{contextResult.featureName}</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {contextResult.hasFeedback ? 'Context regenerated with your feedback' : 'Context built successfully'}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {contextResult.hasFeedback && (
-                  <span className="text-xs text-amber-400 bg-amber-500/10 px-2 py-1 rounded-full">Updated</span>
-                )}
-                <CheckCircle className="w-5 h-5 text-green-400" />
-              </div>
-            </div>
-
-            {/* What AI understood */}
-            <div className="bg-card rounded-xl p-6 border border-border">
-              <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                <Eye className="w-5 h-5 text-primary" /> What AI Understood
-              </h3>
-              <div className="space-y-6">
-                {contextResult.summary.screens_detected.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
-                      <Layout className="w-4 h-4" />
-                      Screens Detected ({contextResult.summary.screens_detected.length})
-                    </h4>
-                    <div className="space-y-2">
-                      {contextResult.summary.screens_detected.map((screen, idx) => (
-                        <div key={idx} className="bg-muted/50 rounded-lg p-3">
-                          <p className="text-foreground font-medium">{screen.name}</p>
-                          <p className="text-muted-foreground text-sm mt-1">{screen.description}</p>
-                          <p className="text-muted-foreground text-xs mt-1">Source: {screen.source}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {contextResult.summary.ui_elements.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
-                      <Layers className="w-4 h-4" />
-                      UI Elements ({contextResult.summary.ui_elements.length})
-                    </h4>
-                    <div className="flex flex-wrap gap-2">
-                      {contextResult.summary.ui_elements.slice(0, 12).map((elem, idx) => (
-                        <span key={idx} className="px-2 py-1 bg-muted rounded text-xs text-foreground">
-                          {elem.type}: {elem.label}
-                        </span>
-                      ))}
-                      {contextResult.summary.ui_elements.length > 12 && (
-                        <span className="px-2 py-1 bg-muted rounded text-xs text-muted-foreground">
-                          +{contextResult.summary.ui_elements.length - 12} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {contextResult.summary.requirements.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
-                      <ListChecks className="w-4 h-4" />
-                      Requirements ({contextResult.summary.requirements.length})
-                    </h4>
-                    <div className="space-y-2">
-                      {contextResult.summary.requirements.map((req, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <span className={`px-1.5 py-0.5 text-xs rounded border ${getPriorityColor(req.priority)}`}>
-                            {req.priority}
-                          </span>
-                          <p className="text-foreground text-sm">{req.text}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {contextResult.summary.user_flows.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mb-2">
-                      User Flows ({contextResult.summary.user_flows.length})
-                    </h4>
-                    <div className="space-y-3">
-                      {contextResult.summary.user_flows.map((flow, idx) => (
-                        <div key={idx} className="bg-muted/50 rounded-lg p-3">
-                          <p className="text-foreground font-medium mb-2">{flow.name}</p>
-                          <ol className="space-y-1">
-                            {flow.steps.map((s, sIdx) => (
-                              <li key={sIdx} className="text-muted-foreground text-sm flex items-start gap-2">
-                                <span className="text-muted-foreground font-mono text-xs">{sIdx + 1}.</span>
-                                {s}
-                              </li>
-                            ))}
-                          </ol>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {contextResult.summary.text_notes.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mb-2">
-                      Notes ({contextResult.summary.text_notes.length})
-                    </h4>
-                    <div className="space-y-2">
-                      {contextResult.summary.text_notes.map((note, idx) => (
-                        <div key={idx} className="bg-muted/50 rounded-lg p-3">
-                          <p className="text-foreground text-sm">{note}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {contextResult.summary.screens_detected.length === 0 &&
-                  contextResult.summary.ui_elements.length === 0 &&
-                  contextResult.summary.text_notes.length === 0 && (
-                    <p className="text-muted-foreground text-sm">No structured data extracted yet.</p>
+              {/* Text notes */}
+              <div className="mb-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <MessageSquare className="size-3.5 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">Text notes</span>
+                  {textNotes.length > 0 && (
+                    <span className="text-xs text-muted-foreground">· {textNotes.length} added</span>
                   )}
-              </div>
-            </div>
-
-            {/* Processed items (local mode only) */}
-            {contextResult.processedItems && contextResult.processedItems.length > 0 && (
-              <div className="bg-card rounded-xl p-6 border border-border">
-                <h3 className="text-sm font-medium text-muted-foreground mb-3">Processed Items</h3>
-                <div className="space-y-2">
-                  {contextResult.processedItems.map((item) => (
-                    <div key={item.id} className="flex items-center gap-3 p-2 bg-muted/50 rounded-lg">
-                      <div className="w-6 h-6 rounded bg-muted flex items-center justify-center text-muted-foreground">
-                        <Image className="w-3 h-3" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-foreground text-sm truncate">{item.source_name}</p>
-                        <p className="text-muted-foreground text-xs">{item.extracted_summary}</p>
-                      </div>
-                      {item.processed && <CheckCircle className="w-4 h-4 text-green-400" />}
-                    </div>
-                  ))}
                 </div>
+                <div className="flex gap-2">
+                  <textarea
+                    value={currentTextNote}
+                    onChange={(e) => setCurrentTextNote(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && currentTextNote.trim()) {
+                        e.preventDefault();
+                        handleAddTextNote();
+                      }
+                    }}
+                    placeholder="Paste requirements, describe expected behavior…"
+                    rows={3}
+                    className="flex-1 px-3.5 py-2.5 bg-card border border-input rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors resize-none"
+                  />
+                  <button
+                    onClick={handleAddTextNote}
+                    disabled={!currentTextNote.trim()}
+                    className="self-start px-3 py-2 bg-muted hover:bg-muted/80 disabled:opacity-40 text-foreground rounded-lg transition-colors flex items-center gap-1.5 text-sm font-medium shrink-0"
+                  >
+                    <Plus className="size-4" /> Add
+                  </button>
+                </div>
+                {textNotes.length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    {textNotes.map((note) => (
+                      <div key={note.id} className="flex items-start gap-2 bg-muted/40 rounded-lg px-3 py-2">
+                        <p className="flex-1 text-xs text-foreground line-clamp-2">{note.text}</p>
+                        <button
+                          onClick={() => handleRemoveTextNote(note.id)}
+                          className="text-muted-foreground hover:text-destructive transition-colors shrink-0 mt-0.5"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
 
-            {/* Feedback */}
-            <div className="bg-card rounded-xl p-6 border border-border">
-              <h3 className="text-lg font-semibold text-foreground mb-3 flex items-center gap-2">
-                <MessageSquare className="w-5 h-5 text-amber-400" /> Provide Feedback (Optional)
-              </h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                If the AI misunderstood something, provide corrections. The context will be regenerated.
-              </p>
-              <textarea
-                value={userFeedback}
-                onChange={(e) => setUserFeedback(e.target.value)}
-                placeholder="e.g., 'The button should say Add to Bag, not just Add.'"
-                rows={3}
-                className="w-full px-4 py-3 bg-muted border border-input rounded-lg text-foreground placeholder-muted-foreground focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 resize-none mb-3"
-              />
-              {isRegenerating && progressMessage && (
-                <div className="bg-amber-500/5 rounded-lg p-3 flex items-center gap-2 text-sm text-amber-400 mb-3">
-                  <Loader className="w-4 h-4 animate-spin shrink-0" />
+              {buildError && (
+                <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2.5 mb-4">
+                  <AlertCircle className="size-4 shrink-0" />
+                  {buildError}
+                </div>
+              )}
+              {isBuilding && progressMessage && (
+                <div className="flex items-center gap-2.5 text-sm text-primary bg-primary/5 border border-primary/15 rounded-lg px-3.5 py-2.5 mb-4">
+                  <Loader className="size-4 animate-spin shrink-0" />
                   {progressMessage}
                 </div>
               )}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => handleBuildContext(userFeedback)}
-                  disabled={!userFeedback.trim() || isRegenerating}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-muted disabled:text-muted-foreground text-white font-medium rounded-lg transition-colors flex items-center gap-2"
-                >
-                  {isRegenerating ? (
-                    <><Loader className="w-4 h-4 animate-spin" /> Regenerating...</>
-                  ) : (
-                    <><Sparkles className="w-4 h-4" /> Regenerate Context</>
-                  )}
-                </button>
-                {userFeedback && (
-                  <button onClick={() => setUserFeedback('')} className="px-4 py-2 bg-muted hover:bg-muted/80 text-muted-foreground text-sm rounded-lg transition-colors">
-                    Clear
-                  </button>
+
+              <button
+                onClick={() => handleBuildContext()}
+                disabled={totalAssets === 0 || isBuilding}
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2"
+              >
+                {isBuilding ? (
+                  <><Loader className="size-4 animate-spin" /> {progressMessage || 'Analysing assets…'}</>
+                ) : (
+                  <><Sparkles className="size-4" /> Build context · {totalAssets} asset{totalAssets !== 1 ? 's' : ''}</>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* ──────────── Step 3: Context ──────────── */}
+          {step === 'summary' && contextResult && (
+            <div>
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="size-5 rounded-full bg-green-500/15 flex items-center justify-center">
+                    <Check className="size-3 text-green-500" />
+                  </div>
+                  <h2 className="text-xl font-bold text-foreground">Context ready</h2>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {contextResult.hasFeedback ? 'Regenerated with your feedback.' : 'AI has analysed your assets.'} Review below then generate tests.
+                </p>
+              </div>
+
+              {/* Prose summary */}
+              {contextResult.contextSummaryText && (
+                <div className="bg-muted/40 rounded-xl p-4 border border-border mb-4">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">What AI understood</p>
+                  <div className="max-h-52 overflow-y-auto pr-1">
+                    <p className="text-sm text-foreground leading-relaxed">{contextResult.contextSummaryText}</p>
+                  </div>
+                </div>
+              )}
+
+
+              {/* Feedback / refine — always visible */}
+              <div className="mb-4">
+                <p className="text-sm font-semibold text-foreground mb-1">Something wrong?</p>
+                <p className="text-xs text-muted-foreground mb-2">Correct the AI and it'll rebuild the context with your feedback.</p>
+                <textarea
+                  value={userFeedback}
+                  onChange={(e) => setUserFeedback(e.target.value)}
+                  placeholder="e.g. The checkout starts from cart, not product page. The button says 'Add to Bag'…"
+                  rows={3}
+                  className="w-full px-3.5 py-2.5 bg-card border border-input rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors resize-none"
+                  disabled={isRegenerating}
+                />
+                {isRegenerating && progressMessage && (
+                  <div className="flex items-center gap-2 text-xs text-amber-500 mt-2">
+                    <Loader className="size-3 animate-spin shrink-0" />
+                    {progressMessage}
+                  </div>
+                )}
+                {userFeedback.trim() && (
+                  <div className="mt-3 flex justify-center">
+                    <button
+                      onClick={() => handleBuildContext(userFeedback)}
+                      disabled={isRegenerating}
+                      className="w-1/2 py-2 bg-card hover:bg-muted/50 disabled:opacity-50 disabled:cursor-not-allowed text-primary text-sm font-medium rounded-lg border border-primary/40 hover:border-primary/70 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Sparkles className="size-4" />
+                      {isRegenerating ? 'Rebuilding context…' : 'Rebuild Context'}
+                    </button>
+                  </div>
                 )}
               </div>
-            </div>
 
-            {generationError && (
-              <div className="bg-red-500/10 rounded-xl p-4 border border-red-500/30 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-red-400 text-sm">{generationError}</p>
-              </div>
-            )}
-
-            {/* Progress during test generation */}
-            {isGenerating && progressMessage && (
-              <div className="bg-green-500/5 rounded-xl p-4 border border-green-500/20 flex items-center gap-3">
-                <Loader className="w-4 h-4 animate-spin text-green-400 shrink-0" />
-                <p className="text-sm text-green-400">{progressMessage}</p>
-              </div>
-            )}
-
-            <button
-              onClick={handleGenerateTests}
-              disabled={isGenerating || isRegenerating}
-              className="w-full py-4 bg-linear-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-muted disabled:to-muted disabled:text-muted-foreground text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-500/25"
-            >
-              {isGenerating ? (
-                <><Loader className="w-5 h-5 animate-spin" /> {progressMessage || 'Generating...'}</>
-              ) : (
-                <><Sparkles className="w-5 h-5" /> Generate & Review Test Cases <ArrowRight className="w-5 h-5" /></>
+              {generationError && (
+                <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2.5 mb-4">
+                  <AlertCircle className="size-4 shrink-0" />
+                  {generationError}
+                </div>
               )}
-            </button>
-          </div>
-        )}
-
-        {/* ================================================
-            Step 4: Review & Save
-        ================================================ */}
-        {step === 'review' && testPlan && (
-          <div className="space-y-6">
-            <div className="bg-card rounded-xl p-6 border border-border">
-              <h3 className="text-foreground font-medium mb-2">Feature Summary</h3>
-              <p className="text-muted-foreground text-sm">{testPlan.feature_summary}</p>
-              <div className="flex items-center gap-4 mt-4 pt-4 border-t border-border">
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-sm">Generated:</span>
-                  <span className="text-foreground font-medium">{testPlan.test_count} test cases</span>
+              {isGenerating && progressMessage && (
+                <div className="flex items-center gap-2.5 text-sm text-primary bg-primary/5 border border-primary/15 rounded-lg px-3.5 py-2.5 mb-4">
+                  <Loader className="size-4 animate-spin shrink-0" />
+                  {progressMessage}
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-sm">Selected:</span>
-                  <span className="text-primary font-medium">{selectedTests.size}</span>
-                </div>
-              </div>
+              )}
+
+              <button
+                onClick={() => handleGenerateTests()}
+                disabled={isGenerating || isRegenerating}
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2"
+              >
+                {isGenerating ? (
+                  <><Loader className="size-4 animate-spin" /> {progressMessage || 'Generating tests…'}</>
+                ) : (
+                  <><Sparkles className="size-4" /> Awesome! Generate Tests</>
+                )}
+              </button>
             </div>
+          )}
 
-            {/* Select/deselect controls */}
-            <div className="flex items-center justify-between">
-              <h3 className="text-foreground font-medium">Test Cases</h3>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setSelectedTests(new Set(testPlan.test_cases.map((tc) => tc.id)))}
-                  className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground bg-card hover:bg-muted rounded-lg transition-colors"
-                >
-                  Select All
-                </button>
-                <button
-                  onClick={() => setSelectedTests(new Set())}
-                  className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground bg-card hover:bg-muted rounded-lg transition-colors"
-                >
-                  Deselect All
-                </button>
+          {/* ──────────── Step 4: Review & Save ──────────── */}
+          {step === 'review' && testPlan && (
+            <div>
+              <div className="mb-5">
+                <h2 className="text-xl font-bold text-foreground">{testPlan.test_count} tests generated</h2>
+                <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{testPlan.feature_summary}</p>
               </div>
-            </div>
 
-            {/* Test case cards */}
-            <div className="space-y-3">
-              {testPlan.test_cases.map((test) => {
-                const isSelected = selectedTests.has(test.id);
-                const isExpanded = expandedTests.has(test.id);
-                return (
-                  <div
-                    key={test.id}
-                    className={`bg-card rounded-xl border transition-all ${isSelected ? 'border-primary/50' : 'border-border'}`}
-                  >
-                    <div className="p-4 flex items-start gap-4">
-                      <button
-                        onClick={() => handleToggleTest(test.id)}
-                        className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 mt-0.5 transition-colors ${isSelected ? 'bg-primary text-white' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
-                      >
-                        {isSelected && <Check className="w-4 h-4" />}
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-muted-foreground text-xs font-mono">{test.id}</span>
-                          <span className={`px-2 py-0.5 text-xs rounded-full ${getCategoryColor(test.category)}`}>
-                            {test.category.replace('_', ' ')}
-                          </span>
-                          <span className={`px-2 py-0.5 text-xs rounded-full border ${getPriorityColor(test.priority)}`}>
-                            {test.priority}
-                          </span>
-                        </div>
-                        <h4 className="text-foreground font-medium">{test.name}</h4>
-                        <p className="text-muted-foreground text-sm mt-1">{test.description}</p>
-                      </div>
-                      <button
-                        onClick={() => handleToggleExpand(test.id)}
-                        className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                      </button>
-                    </div>
-
-                    {isExpanded && (
-                      <div className="px-4 pb-4 pt-2 border-t border-border mx-4 mb-4">
-                        <div className="mb-4">
-                          <h5 className="text-muted-foreground text-xs font-medium uppercase tracking-wider mb-2">
-                            Steps
-                          </h5>
-                          <ol className="space-y-1">
-                            {test.steps.map((s, idx) => (
-                              <li key={idx} className="text-foreground text-sm flex items-start gap-2">
-                                <span className="text-muted-foreground font-mono text-xs mt-0.5">{idx + 1}.</span>
-                                {s}
-                              </li>
-                            ))}
-                          </ol>
-                        </div>
-                        <div>
-                          <h5 className="text-muted-foreground text-xs font-medium uppercase tracking-wider mb-2">
-                            Expected Result
-                          </h5>
-                          <p className="text-green-400 text-sm">{test.expected_result}</p>
-                        </div>
+              {/* Collapsible regenerate panel */}
+              <div className="mb-4 border border-border rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setShowTestFeedback((p) => !p)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="size-3.5 text-muted-foreground" />
+                    <span className="text-sm font-medium text-foreground">Not what you expected?</span>
+                  </div>
+                  <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', showTestFeedback && 'rotate-180')} />
+                </button>
+                {showTestFeedback && (
+                  <div className="px-4 pb-4 border-t border-border pt-3">
+                    <p className="text-xs text-muted-foreground mb-2">Tell us what to change and we'll regenerate the tests.</p>
+                    <textarea
+                      value={testFeedback}
+                      onChange={(e) => setTestFeedback(e.target.value)}
+                      placeholder="e.g. Focus more on payment failure edge cases, add accessibility tests…"
+                      rows={3}
+                      className="w-full px-3.5 py-2.5 bg-card border border-input rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors resize-none mb-2"
+                      disabled={isGenerating}
+                    />
+                    {isGenerating && progressMessage && (
+                      <div className="flex items-center gap-2 text-xs text-primary mb-2">
+                        <Loader className="size-3 animate-spin shrink-0" />
+                        {progressMessage}
                       </div>
                     )}
+                    <button
+                      onClick={() => handleGenerateTests(testFeedback)}
+                      disabled={!testFeedback.trim() || isGenerating}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary/10 hover:bg-primary/20 text-primary rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      <Sparkles className="size-3.5" />
+                      {isGenerating ? 'Regenerating…' : 'Regenerate tests'}
+                    </button>
                   </div>
-                );
-              })}
-            </div>
-
-            {testPlan.coverage_notes && (
-              <div className="bg-amber-500/5 rounded-xl p-4 border border-amber-500/20">
-                <h4 className="text-amber-400 text-sm font-medium mb-2">Coverage Notes</h4>
-                <p className="text-amber-300/70 text-sm">{testPlan.coverage_notes}</p>
+                )}
               </div>
-            )}
 
-            {generationError && (
-              <div className="bg-red-500/10 rounded-xl p-4 border border-red-500/30 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-red-400 text-sm">{generationError}</p>
+              {/* Controls row */}
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm text-muted-foreground">{selectedTests.size} selected</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setSelectedTests(new Set(testPlan.test_cases.map((tc) => tc.test_key)))}
+                    className="px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded-md transition-colors"
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setSelectedTests(new Set())}
+                    className="px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded-md transition-colors"
+                  >
+                    None
+                  </button>
+                </div>
               </div>
-            )}
 
-            <button
-              onClick={handleSave}
-              disabled={selectedTests.size === 0 || isApproving}
-              className="w-full py-4 bg-linear-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-muted disabled:to-muted disabled:text-muted-foreground text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-500/25"
-            >
-              {isApproving ? (
-                <><Loader className="w-5 h-5 animate-spin" /> Saving...</>
-              ) : (
-                <><Check className="w-5 h-5" /> Save ({selectedTests.size} tests)</>
+              {/* Test cards */}
+              <div className="space-y-2 mb-4">
+                {testPlan.test_cases.map((test) => {
+                  const isSelected = selectedTests.has(test.test_key);
+                  const isExpanded = expandedTests.has(test.test_key);
+                  const priorityAccent = {
+                    critical: 'border-l-red-500',
+                    high: 'border-l-orange-400',
+                    medium: 'border-l-amber-400',
+                    low: 'border-l-green-500',
+                  }[test.priority ?? 'medium'] ?? 'border-l-border';
+
+                  return (
+                    <div
+                      key={test.test_key}
+                      className={cn(
+                        'rounded-xl border border-border border-l-2 bg-card transition-all',
+                        priorityAccent,
+                        !isSelected && 'opacity-55'
+                      )}
+                    >
+                      <div className="p-3.5 flex items-start gap-3">
+                        <button
+                          onClick={() => handleToggleTest(test.test_key)}
+                          className={cn(
+                            'size-4.5 rounded flex items-center justify-center shrink-0 mt-0.5 transition-all border',
+                            isSelected
+                              ? 'bg-primary border-primary text-primary-foreground'
+                              : 'border-border bg-card hover:border-primary/50'
+                          )}
+                        >
+                          {isSelected && <Check className="size-3" />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                            <span className="text-muted-foreground text-xs font-mono">{test.test_key}</span>
+                            {test.category && (
+                              <span className={cn('px-1.5 py-0.5 text-xs rounded-full', getCategoryColor(test.category))}>
+                                {test.category.replace('_', ' ')}
+                              </span>
+                            )}
+                            <span className={cn('px-1.5 py-0.5 text-xs rounded-full border', getPriorityColor(test.priority))}>
+                              {test.priority ?? 'medium'}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium text-foreground">{test.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{test.goal}</p>
+                        </div>
+                        <button
+                          onClick={() => handleToggleExpand(test.test_key)}
+                          className="text-muted-foreground hover:text-foreground transition-colors shrink-0 p-0.5"
+                        >
+                          {isExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                        </button>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-border mx-3.5 mb-3.5 pt-3 space-y-3">
+                          {test.expected_result && (
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1.5">Expected</p>
+                              <p className="text-sm text-green-500">{test.expected_result}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {testPlan.coverage_notes && (
+                <div className="bg-amber-500/5 border border-amber-500/15 rounded-xl px-4 py-3 mb-4">
+                  <p className="text-xs font-medium text-amber-500 mb-1">Coverage notes</p>
+                  <p className="text-xs text-muted-foreground">{testPlan.coverage_notes}</p>
+                </div>
               )}
-            </button>
-          </div>
-        )}
+
+              {generationError && (
+                <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2.5 mb-4">
+                  <AlertCircle className="size-4 shrink-0" />
+                  {generationError}
+                </div>
+              )}
+
+              <button
+                onClick={handleSave}
+                disabled={selectedTests.size === 0 || isApproving}
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2"
+              >
+                {isApproving ? (
+                  <><Loader className="size-4 animate-spin" /> Saving…</>
+                ) : (
+                  <><Check className="size-4" /> All Good, Save {selectedTests.size} Test{selectedTests.size !== 1 ? 's' : ''}</>
+                )}
+              </button>
+            </div>
+          )}
+
+        </div>
       </div>
     </div>
   );

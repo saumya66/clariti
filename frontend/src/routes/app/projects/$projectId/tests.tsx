@@ -44,14 +44,18 @@ function statusBadgeClass(status: string) {
   }
 }
 
-function FeatureRow({ feature }: { feature: Feature }) {
+function FeatureRow({ feature, projectId }: { feature: Feature; projectId: string }) {
   return (
-    <div className="flex items-center gap-4 rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:bg-muted/40">
+    <Link
+      to="/app/projects/$projectId/tests/$featureId"
+      params={{ projectId, featureId: feature.id }}
+      className="flex items-center gap-4 rounded-lg border border-border bg-card px-4 py-3 transition-all hover:border-primary/30 hover:shadow-sm group"
+    >
       <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
         <FlaskConical className="size-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-foreground">{feature.name}</p>
+        <p className="truncate text-sm font-medium text-foreground group-hover:text-primary transition-colors">{feature.name}</p>
         {feature.description && (
           <p className="truncate text-xs text-muted-foreground">{feature.description}</p>
         )}
@@ -69,15 +73,16 @@ function FeatureRow({ feature }: { feature: Feature }) {
           <Clock className="size-3" />
           {formatDate(feature.created_at)}
         </div>
+        <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
-    </div>
+    </Link>
   );
 }
 
 function TestSuitesPage() {
   const { projectId } = Route.useParams();
   const { project } = useProject(projectId);
-  const { features, loading } = useProjectFeatures(projectId);
+  const { features, loading, refetch } = useProjectFeatures(projectId);
   const [createTestOpen, setCreateTestOpen] = React.useState(false);
 
   if (!project) return null;
@@ -156,7 +161,7 @@ function TestSuitesPage() {
       ) : (
         <div className="space-y-2">
           {features.map((feature) => (
-            <FeatureRow key={feature.id} feature={feature} />
+            <FeatureRow key={feature.id} feature={feature} projectId={projectId} />
           ))}
         </div>
       )}
@@ -175,9 +180,9 @@ function TestSuitesPage() {
 
       {/* New Test Suite Dialog */}
       <Dialog open={createTestOpen} onOpenChange={setCreateTestOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] w-[95vw] overflow-hidden flex flex-col p-0">
-          <div className="flex-1 overflow-y-auto min-h-0">
-            <CreateTestFlow onClose={() => setCreateTestOpen(false)} projectId={projectId} />
+        <DialogContent className="max-w-4xl max-h-[88vh] min-h-[540px] w-[95vw] overflow-hidden flex flex-col p-0">
+          <div className="flex flex-1 min-h-0 overflow-hidden">
+            <CreateTestFlow onClose={() => { setCreateTestOpen(false); refetch(); }} projectId={projectId} />
           </div>
         </DialogContent>
       </Dialog>
