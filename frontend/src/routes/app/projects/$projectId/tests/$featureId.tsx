@@ -5,12 +5,15 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
-  Plus,
   Play,
   Sparkles,
   AlertCircle,
   ListChecks,
   Zap,
+  RefreshCw,
+  Monitor,
+  CheckCircle2,
+  X,
 } from 'lucide-react';
 import {
   Breadcrumb,
@@ -24,10 +27,10 @@ import {
   Dialog,
   DialogContent,
 } from '@/components/ui/dialog';
-import { CreateTestFlow } from '@/components/CreateTestFlow';
 import { useProject, useProjectFeatures, useFeatureTestCases } from '@/hooks/useProjectsQueries';
+import { useWindows } from '@/hooks';
 import { cn } from '@/lib/utils';
-import type { CloudTestCase } from '@/api/client';
+import type { CloudTestCase, WindowInfo } from '@/api/client';
 
 export const Route = createFileRoute('/app/projects/$projectId/tests/$featureId')({
   component: FeatureDetailPage,
@@ -97,12 +100,9 @@ function TestCaseCard({ tc }: { tc: CloudTestCase }) {
         onClick={() => setExpanded((p) => !p)}
         className="w-full flex items-start gap-4 px-4 py-3.5 text-left hover:bg-muted/20 transition-colors"
       >
-        {/* Test key */}
         <span className="shrink-0 font-mono text-[11px] font-semibold text-muted-foreground mt-0.5 w-12">
           {tc.test_key}
         </span>
-
-        {/* Name + badges + goal */}
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5 mb-1">
             {tc.category && (
@@ -117,8 +117,6 @@ function TestCaseCard({ tc }: { tc: CloudTestCase }) {
           <p className="text-sm font-semibold text-foreground leading-snug">{tc.title}</p>
           <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{tc.goal}</p>
         </div>
-
-        {/* Chevron */}
         <div className="shrink-0 text-muted-foreground mt-0.5">
           {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
         </div>
@@ -158,13 +156,169 @@ function SidebarSkeleton() {
   );
 }
 
+// ─── Window Picker Modal ──────────────────────────────────────────────────────
+
+function WindowRow({
+  window: w,
+  selected,
+  onSelect,
+}: {
+  window: WindowInfo;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className={cn(
+        'w-full flex items-center gap-3 px-4 py-3 text-left border-l-2 transition-all',
+        selected
+          ? 'border-l-primary bg-primary/5'
+          : 'border-l-transparent hover:bg-muted/40'
+      )}
+    >
+      <div className={cn(
+        'flex size-8 shrink-0 items-center justify-center rounded-lg',
+        selected ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+      )}>
+        <Monitor className="size-4" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className={cn('text-sm font-semibold truncate', selected ? 'text-primary' : 'text-foreground')}>
+          {w.app_name} — {w.title}
+        </p>
+        <p className="text-xs text-muted-foreground truncate mt-0.5">{w.title}</p>
+      </div>
+      {selected && (
+        <div className="shrink-0 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <CheckCircle2 className="size-3.5" />
+        </div>
+      )}
+    </button>
+  );
+}
+
+function RunAllTestsModal({
+  open,
+  onClose,
+  featureName,
+  testCount,
+  onStart,
+}: {
+  open: boolean;
+  onClose: () => void;
+  featureName: string;
+  testCount: number;
+  onStart: (windowTitle: string) => void;
+}) {
+  const { windows, loading, refetch } = useWindows();
+  const [selected, setSelected] = React.useState<WindowInfo | null>(null);
+
+  React.useEffect(() => {
+    if (!open) setSelected(null);
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md p-0 overflow-hidden gap-0">
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 pt-6 pb-4">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">Run All Tests</h2>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              {featureName} · {testCount} test{testCount !== 1 ? 's' : ''}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-muted"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Target Window section */}
+        <div className="px-6 pb-3">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Target Window
+            </span>
+            <button
+              onClick={() => refetch()}
+              disabled={loading}
+              className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* Window list */}
+        <div className="border-t border-b border-border max-h-52 overflow-y-auto">
+          {loading ? (
+            <div className="space-y-0">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-3 border-l-2 border-l-transparent">
+                  <div className="size-8 rounded-lg bg-muted animate-pulse shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3.5 w-40 rounded bg-muted animate-pulse" />
+                    <div className="h-3 w-56 rounded bg-muted animate-pulse" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : windows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-center px-4">
+              <Monitor className="size-8 text-muted-foreground/40 mb-2" />
+              <p className="text-sm text-muted-foreground">No open windows found</p>
+              <button onClick={() => refetch()} className="mt-2 text-xs text-primary hover:underline">
+                Try refreshing
+              </button>
+            </div>
+          ) : (
+            windows.map((w) => (
+              <WindowRow
+                key={w.id}
+                window={w}
+                selected={selected?.id === w.id}
+                onSelect={() => setSelected(w)}
+              />
+            ))
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-4 bg-muted/20">
+          <button
+            onClick={onClose}
+            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => selected && onStart(selected.title)}
+            disabled={!selected}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+          >
+            <Play className="size-3.5 fill-current" />
+            Start Execution
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 function FeatureDetailPage() {
   const { projectId, featureId } = Route.useParams();
   const router = useRouter();
   const { project } = useProject(projectId);
-  const { features, refetch: refetchFeatures } = useProjectFeatures(projectId);
-  const { testCases, loading, error, refetch: refetchTests } = useFeatureTestCases(featureId);
-  const [addTestOpen, setAddTestOpen] = React.useState(false);
+  const { features } = useProjectFeatures(projectId);
+  const { testCases, loading, error } = useFeatureTestCases(featureId);
+  const [runModalOpen, setRunModalOpen] = React.useState(false);
 
   const feature = features.find((f) => f.id === featureId);
 
@@ -176,6 +330,18 @@ function FeatureDetailPage() {
     }
     return counts;
   }, [testCases]);
+
+  const handleStartExecution = (windowTitle: string) => {
+    setRunModalOpen(false);
+    router.navigate({
+      to: '/app/execute',
+      search: {
+        featureId,
+        windowTitle,
+        featureName: feature?.name ?? '',
+      },
+    });
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
@@ -225,22 +391,14 @@ function FeatureDetailPage() {
               </p>
             )}
           </div>
-          <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              onClick={() => setAddTestOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground shadow-sm transition-all hover:border-primary/40 hover:text-primary hover:shadow-md active:scale-95"
-            >
-              <Plus className="size-4" />
-              Add Test
-            </button>
-            <button
-              onClick={() => router.navigate({ to: '/app/execute' })}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md active:scale-95"
-            >
-              <Play className="size-3.5 fill-current" />
-              Run All Tests
-            </button>
-          </div>
+          <button
+            onClick={() => setRunModalOpen(true)}
+            disabled={testCases.length === 0}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+          >
+            <Play className="size-3.5 fill-current" />
+            Run All Tests
+          </button>
         </div>
 
         {/* Two-column layout */}
@@ -275,13 +433,14 @@ function FeatureDetailPage() {
                 <p className="mt-2 max-w-xs text-sm text-muted-foreground leading-relaxed">
                   Use the test creation flow to generate AI-powered test cases for this suite.
                 </p>
-                <button
-                  onClick={() => setAddTestOpen(true)}
+                <Link
+                  to="/app/projects/$projectId/tests"
+                  params={{ projectId }}
                   className="mt-6 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90"
                 >
                   <Sparkles className="size-4" />
                   Generate with AI
-                </button>
+                </Link>
               </div>
             ) : (
               <div className="space-y-2.5">
@@ -308,7 +467,6 @@ function FeatureDetailPage() {
                   </span>
                 </div>
 
-                {/* Total count */}
                 <div className="mb-4">
                   <span className="text-5xl font-black text-foreground tabular-nums tracking-tighter leading-none">
                     {testCases.length}
@@ -316,7 +474,6 @@ function FeatureDetailPage() {
                   <span className="ml-2 text-sm font-medium text-muted-foreground">Total Tests</span>
                 </div>
 
-                {/* Priority breakdown */}
                 <div className="space-y-2.5">
                   {PRIORITY_META.map(({ key, label, dot }) => (
                     priorityCounts[key] ? (
@@ -339,7 +496,6 @@ function FeatureDetailPage() {
                   ))}
                 </div>
 
-                {/* Context summary */}
                 {feature?.context_summary && (
                   <div className="mt-5 pt-4 border-t border-border">
                     <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
@@ -352,7 +508,6 @@ function FeatureDetailPage() {
                   </div>
                 )}
 
-                {/* Footer */}
                 {feature?.updated_at && (
                   <div className="mt-4 pt-3 border-t border-border flex items-center justify-between">
                     <span className="text-[11px] text-muted-foreground">
@@ -382,10 +537,11 @@ function FeatureDetailPage() {
                 }
               </p>
               <button
-                onClick={() => setAddTestOpen(true)}
-                className="w-full rounded-xl bg-white/15 hover:bg-white/25 transition-colors py-2 text-xs font-semibold text-primary-foreground"
+                onClick={() => testCases.length > 0 ? setRunModalOpen(true) : undefined}
+                disabled={testCases.length === 0}
+                className="w-full rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-50 transition-colors py-2 text-xs font-semibold text-primary-foreground"
               >
-                Generate Tests
+                {testCases.length > 0 ? 'Run Tests' : 'Generate Tests'}
               </button>
             </div>
 
@@ -393,21 +549,14 @@ function FeatureDetailPage() {
         </div>
       </div>
 
-      {/* Add Test Dialog */}
-      <Dialog open={addTestOpen} onOpenChange={setAddTestOpen}>
-        <DialogContent className="max-w-4xl max-h-[88vh] min-h-135 w-[95vw] overflow-hidden flex flex-col p-0">
-          <div className="flex flex-1 min-h-0 overflow-hidden">
-            <CreateTestFlow
-              onClose={() => {
-                setAddTestOpen(false);
-                refetchTests();
-                refetchFeatures();
-              }}
-              projectId={projectId}
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Run All Tests Modal */}
+      <RunAllTestsModal
+        open={runModalOpen}
+        onClose={() => setRunModalOpen(false)}
+        featureName={feature?.name ?? 'Test Suite'}
+        testCount={testCases.length}
+        onStart={handleStartExecution}
+      />
     </div>
   );
 }
