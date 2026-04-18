@@ -1,16 +1,22 @@
 import { create } from 'zustand';
 import {
   executeTestsStream,
+  provideGuidance,
+  pauseExecution as apiPauseExecution,
+  resumeExecution as apiResumeExecution,
+  abortExecution as apiAbortExecution,
   CUProvider,
   type CloudTestCase,
   type TestStartEvent,
   type StepEvent,
+  type NeedHelpEvent,
+  type PausedEvent,
   type TestCompleteEvent,
   type SuiteCompleteEvent,
 } from '../api/client';
 
 export type TestRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
-export type SuiteRunStatus = 'idle' | 'running' | 'complete' | 'error';
+export type SuiteRunStatus = 'idle' | 'running' | 'complete' | 'error' | 'aborted';
 
 export interface TestRun {
   id: string;
@@ -30,8 +36,16 @@ export interface ActivityEntry {
   testId: string;
   action: string;
   description: string;
-  type: 'click' | 'type' | 'scroll' | 'observe' | 'navigate' | 'wait' | 'other';
+  type: 'click' | 'type' | 'scroll' | 'observe' | 'navigate' | 'wait' | 'guidance' | 'other';
   success: boolean;
+  confidence?: 'high' | 'medium' | 'low';
+}
+
+export interface GuidanceNeeded {
+  testId: string;
+  question: string;
+  currentState: string;
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 function getActivityType(action: string): ActivityEntry['type'] {
@@ -66,6 +80,10 @@ interface TestSuiteExecutionState {
   suiteResult: { passed: number; failed: number; skipped: number; total: number } | null;
   error: string | null;
 
+  // Guidance / pause state
+  guidanceNeeded: GuidanceNeeded | null;
+  isPaused: boolean;
+
   setInitialTests: (tests: CloudTestCase[]) => void;
   startExecution: (params: {
     featureId: string;
@@ -75,8 +93,21 @@ interface TestSuiteExecutionState {
     token: string;
     userId: string;
   }) => Promise<void>;
+
+  /** Submit guidance when the agent is stuck or paused */
+  submitGuidance: (guidance: string) => Promise<void>;
+  /** Manually pause execution after the current step */
+  pauseExecution: () => Promise<void>;
+  /** Resume execution after a manual pause, optionally with guidance */
+  resumeExecution: (guidance?: string) => Promise<void>;
+  /** Abort the entire run immediately */
+  abortExecution: () => Promise<void>;
+
   reset: () => void;
 }
+
+// AbortController lives outside Zustand state (non-serialisable)
+let _abortController: AbortController | null = null;
 
 export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, get) => ({
   status: 'idle',
@@ -89,6 +120,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
   thinking: '',
   suiteResult: null,
   error: null,
+  guidanceNeeded: null,
+  isPaused: false,
 
   setInitialTests: (testCases: CloudTestCase[]) => {
     set({
@@ -105,6 +138,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
 
   startExecution: async ({ featureId, featureName, windowTitle, provider, token, userId }) => {
     const existingTests = get().tests;
+    // Create a fresh AbortController for this run
+    _abortController = new AbortController();
+
     set({
       status: 'running',
       featureId,
@@ -116,6 +152,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       thinking: '',
       suiteResult: null,
       error: null,
+      guidanceNeeded: null,
+      isPaused: false,
     });
 
     try {
@@ -143,6 +181,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
               currentTestId: data.test_id,
               activityLog: [],
               thinking: '',
+              guidanceNeeded: null,
+              isPaused: false,
             }));
           },
 
@@ -159,12 +199,51 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
               description,
               type: getActivityType(data.action),
               success: data.success,
+              confidence: data.confidence,
             };
 
             set((state) => ({
               activityLog: [...state.activityLog, entry],
               thinking: '',
             }));
+          },
+
+          onNeedHelp: (data: NeedHelpEvent) => {
+            // Add a guidance-request entry to the activity log
+            const entry: ActivityEntry = {
+              id: `${data.test_id}-help-${Date.now()}`,
+              time: formatTime(new Date()),
+              testId: data.test_id,
+              action: 'stuck',
+              description: data.question,
+              type: 'guidance',
+              success: false,
+              confidence: data.confidence,
+            };
+            set((state) => ({
+              activityLog: [...state.activityLog, entry],
+              guidanceNeeded: {
+                testId: data.test_id,
+                question: data.question,
+                currentState: data.current_state,
+                confidence: data.confidence,
+              },
+            }));
+          },
+
+          onPaused: (data: PausedEvent) => {
+            set({ isPaused: true, guidanceNeeded: null });
+            // Add a paused marker to the activity log
+            const entry: ActivityEntry = {
+              id: `${data.test_id}-paused-${Date.now()}`,
+              time: formatTime(new Date()),
+              testId: data.test_id,
+              action: 'paused',
+              description: 'Execution paused — waiting for your guidance',
+              type: 'guidance',
+              success: true,
+            };
+            set((state) => ({ activityLog: [...state.activityLog, entry] }));
           },
 
           onTestComplete: (data: TestCompleteEvent) => {
@@ -179,6 +258,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
                     }
                   : t
               ),
+              guidanceNeeded: null,
+              isPaused: false,
             }));
           },
 
@@ -193,6 +274,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
               },
               currentTestId: null,
               thinking: '',
+              guidanceNeeded: null,
+              isPaused: false,
             });
           },
 
@@ -204,18 +287,74 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
             }));
           },
 
-          onError: (message) => {
-            set({ status: 'error', error: message, thinking: '' });
+          onAborted: () => {
+            set({ status: 'idle', currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
           },
-        }
+
+          onError: (message) => {
+            set({ status: 'error', error: message, thinking: '', guidanceNeeded: null, isPaused: false });
+          },
+        },
+        _abortController?.signal
       );
     } catch (err) {
+      // AbortError is swallowed in executeTestsStream — any re-throw here is a real error
       set({
         status: 'error',
         error: err instanceof Error ? err.message : 'Execution failed',
         thinking: '',
+        guidanceNeeded: null,
+        isPaused: false,
       });
     }
+  },
+
+  submitGuidance: async (guidance: string) => {
+    const { featureId, guidanceNeeded } = get();
+    if (!featureId || !guidanceNeeded) return;
+    try {
+      await provideGuidance(featureId, guidanceNeeded.testId, guidance);
+      set({ guidanceNeeded: null });
+    } catch (err) {
+      console.error('Failed to submit guidance:', err);
+    }
+  },
+
+  pauseExecution: async () => {
+    const { featureId } = get();
+    if (!featureId) return;
+    try {
+      await apiPauseExecution(featureId);
+    } catch (err) {
+      console.error('Failed to pause execution:', err);
+    }
+  },
+
+  resumeExecution: async (guidance?: string) => {
+    const { featureId } = get();
+    if (!featureId) return;
+    try {
+      await apiResumeExecution(featureId, guidance);
+      set({ isPaused: false, guidanceNeeded: null });
+    } catch (err) {
+      console.error('Failed to resume execution:', err);
+    }
+  },
+
+  abortExecution: async () => {
+    const { featureId } = get();
+    // Cancel the SSE fetch immediately so the frontend stops reading
+    _abortController?.abort();
+    _abortController = null;
+    // Tell the backend to stop the loop
+    if (featureId) {
+      try {
+        await apiAbortExecution(featureId);
+      } catch (err) {
+        console.error('Failed to send abort signal to backend:', err);
+      }
+    }
+    set({ status: 'aborted', currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
   },
 
   reset: () =>
@@ -230,5 +369,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       thinking: '',
       suiteResult: null,
       error: null,
+      guidanceNeeded: null,
+      isPaused: false,
     }),
 }));

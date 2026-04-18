@@ -18,7 +18,7 @@ import anthropic
 
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5"
 
 Provider = Literal["gemini", "claude"]
 

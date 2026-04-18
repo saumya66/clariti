@@ -17,6 +17,9 @@ export function useWindows() {
         )
         .sort((a, b) => a.app_name.localeCompare(b.app_name));
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
+    gcTime: 0,
   });
 
   return {

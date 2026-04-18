@@ -96,6 +96,7 @@ class ClaudeComputerUseAgent:
         self.display_width = display_width
         self.display_height = display_height
         self.messages: list[dict] = []
+        self._pending_guidance: Optional[str] = None
         self.tools = [
             {
                 "type": TOOL_VERSION,
@@ -129,31 +130,54 @@ class ClaudeComputerUseAgent:
         ]
         return self._call()
 
+    def inject_guidance(self, text: str) -> None:
+        """
+        Queue guidance text to be included in the next step() call.
+        It will be sent as a text block alongside the tool results so Claude
+        sees it as part of the ongoing conversation turn.
+        """
+        self._pending_guidance = text
+
     def step(self, tool_use_ids: list[str], screenshot_bytes: bytes) -> ClaudeCUResponse:
         """
         Continue after executing actions.
         Send tool_result for each tool_use_id with the new screenshot.
+        If inject_guidance() was called before this, the guidance is included
+        as a text block in the same user message so Claude sees it immediately.
         """
         screenshot_b64 = resize_screenshot(
             screenshot_bytes, self.display_width, self.display_height
         )
 
+        pending = self._pending_guidance
+        self._pending_guidance = None
+
         tool_results = []
-        for tid in tool_use_ids:
+        for i, tid in enumerate(tool_use_ids):
+            # Embed guidance inside the LAST tool_result's content alongside the screenshot.
+            # The Anthropic computer-use API supports multi-block tool_result content
+            # (image + text), which is the only way to pass user feedback mid-conversation.
+            content: list[dict] = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": screenshot_b64,
+                    },
+                }
+            ]
+            if pending and i == len(tool_use_ids) - 1:
+                content.append({
+                    "type": "text",
+                    "text": f"[User Guidance] {pending}",
+                })
+
             tool_results.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": tid,
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": screenshot_b64,
-                            },
-                        }
-                    ],
+                    "content": content,
                 }
             )
 

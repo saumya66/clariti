@@ -337,6 +337,7 @@ function FeatureDetailPage() {
       to: '/app/execute',
       search: {
         featureId,
+        projectId,
         windowTitle,
         featureName: feature?.name ?? '',
       },

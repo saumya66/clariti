@@ -125,6 +125,20 @@ app.add_middleware(
 # Global store for guidance (context_id:test_id -> list of guidance strings)
 guidance_store: dict[str, list[str]] = {}
 
+# --- Guided execution stores ---
+# asyncio.Event per stuck/low-confidence pause: key = "context_id:test_id"
+guidance_events: dict[str, asyncio.Event] = {}
+# Guidance text waiting to be consumed: key = "context_id:test_id"
+guidance_text: dict[str, str] = {}
+# Manual pause flag: key = context_id
+pause_flags: dict[str, bool] = {}
+# asyncio.Event to resume after manual pause: key = context_id
+pause_resume_events: dict[str, asyncio.Event] = {}
+# Optional guidance submitted alongside a manual resume: key = context_id
+pause_guidance: dict[str, str] = {}
+# Abort flag: key = context_id — when True the execution loop should stop immediately
+abort_flags: dict[str, bool] = {}
+
 
 # =============================================================================
 # Request/Response Models
@@ -2682,10 +2696,10 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     continue
 
                 activate_window(window)
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
 
                 try:
-                    screenshot_bytes = capture_window(window)
+                    screenshot_bytes = await asyncio.to_thread(capture_window, window)
                 except Exception as e:
                     yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': f'Screenshot failed: {str(e)}'})}\n\n"
                     suite_results["failed"] += 1
@@ -2693,11 +2707,19 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     yield f"data: {json.dumps({'event': 'test_complete', 'test_id': test_id, 'status': 'failed', 'steps_executed': 0})}\n\n"
                     continue
 
-                cu_response = agent.start(goal, screenshot_bytes)
+                # Run blocking Anthropic API call in a thread so the event loop stays free
+                cu_response = await asyncio.to_thread(agent.start, goal, screenshot_bytes)
                 step_num = 0
                 max_steps = 30
 
                 for turn in range(max_steps):
+                    # Abort check — fires at the top of every turn
+                    if abort_flags.get(context_id):
+                        print(f"[ABORT] 🛑  Execution aborted (Claude CU) at turn {turn} for test {test_id}")
+                        yield f"data: {json.dumps({'event': 'aborted', 'test_id': test_id})}\n\n"
+                        await asyncio.sleep(0)
+                        break
+
                     if cu_response.thinking:
                         latest_thinking = cu_response.thinking
 
@@ -2729,7 +2751,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
                         try:
                             print(f"[EXECUTE-CU] Step {step_num}: {action.action}")
-                            result = execute_claude_action(action, window)
+                            result = await asyncio.to_thread(execute_claude_action, action, window)
                             step_data['success'] = True
                             step_data['coordinates'] = result.get("coordinates")
                         except Exception as e:
@@ -2747,18 +2769,38 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         yield f"data: {json.dumps(step_event)}\n\n"
                         await asyncio.sleep(0)
 
-                    time.sleep(1.0)
+                    # Manual pause check — fires after every Claude CU turn
+                    if pause_flags.get(context_id):
+                        print(f"[PAUSE] ⏸  Execution paused (Claude CU) after step {step_num} for test {test_id}")
+                        p_evt = asyncio.Event()
+                        pause_resume_events[context_id] = p_evt
+                        yield f"data: {json.dumps({'event': 'paused', 'test_id': test_id, 'step_number': step_num})}\n\n"
+                        await asyncio.sleep(0)
+                        try:
+                            await asyncio.wait_for(p_evt.wait(), timeout=300)
+                        except asyncio.TimeoutError:
+                            print(f"[PAUSE] ⏱  Pause timed out for context {context_id} — resuming without guidance")
+                        if g := pause_guidance.pop(context_id, None):
+                            print(f"[PAUSE] ▶  Resuming (Claude CU) with guidance: {g!r}")
+                            agent.inject_guidance(g)
+                        else:
+                            print(f"[PAUSE] ▶  Resuming (Claude CU) without guidance")
+                        pause_flags.pop(context_id, None)
+                        pause_resume_events.pop(context_id, None)
+
+                    await asyncio.sleep(1.0)
 
                     try:
-                        screenshot_bytes = capture_window(window)
+                        screenshot_bytes = await asyncio.to_thread(capture_window, window)
                     except Exception as e:
                         print(f"[EXECUTE-CU] Screenshot failed: {e}")
                         break
 
                     if tool_use_ids:
-                        cu_response = agent.step(tool_use_ids, screenshot_bytes)
+                        cu_response = await asyncio.to_thread(agent.step, tool_use_ids, screenshot_bytes)
                     else:
-                        cu_response = agent.step(
+                        cu_response = await asyncio.to_thread(
+                            agent.step,
                             [action.tool_use_id for action in cu_response.actions] if cu_response.actions else [],
                             screenshot_bytes,
                         )
@@ -2771,38 +2813,62 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                 action_history = []
 
                 for step_num in range(1, max_steps + 1):
+                    # Abort check — fires at the top of every step
+                    if abort_flags.get(context_id):
+                        print(f"[ABORT] 🛑  Execution aborted (Gemini) at step {step_num} for test {test_id}")
+                        yield f"data: {json.dumps({'event': 'aborted', 'test_id': test_id})}\n\n"
+                        await asyncio.sleep(0)
+                        break
+
                     try:
                         activate_window(window)
                         await asyncio.sleep(0.3)
 
-                        screenshot = capture_window(window)
+                        screenshot = await asyncio.to_thread(capture_window, window)
                         if not screenshot:
                             raise Exception("Failed to capture window")
 
-                        decision = orchestrator.analyze_and_decide(
-                            screenshot_bytes=screenshot,
-                            goal=goal,
-                            previous_actions=action_history
+                        # Run blocking Gemini API call in a thread so the event loop stays free
+                        decision = await asyncio.to_thread(
+                            orchestrator.analyze_and_decide,
+                            screenshot,
+                            goal,
+                            action_history,
                         )
 
-                        if decision.action == OrchestratorActionType.STUCK:
+                        if decision.action == OrchestratorActionType.STUCK or decision.confidence == "low":
+                            trigger = "STUCK" if decision.action == OrchestratorActionType.STUCK else f"low confidence ({decision.confidence})"
+                            print(f"[GUIDANCE] 🤔 Agent triggered need_help ({trigger}) at step {step_num} for test {test_id}")
+                            print(f"[GUIDANCE]    State : {decision.current_state}")
+                            print(f"[GUIDANCE]    Reason: {decision.reasoning}")
                             need_help_event = {
                                 'event': 'need_help',
                                 'test_id': test_id,
                                 'step_number': step_num,
                                 'current_state': decision.current_state,
                                 'reasoning': decision.reasoning,
-                                'question': decision.reasoning
+                                'question': decision.reasoning,
+                                'confidence': decision.confidence,
                             }
                             yield f"data: {json.dumps(need_help_event)}\n\n"
+                            await asyncio.sleep(0)
 
                             g_key = f"{context_id}:{test_id}"
-                            if g_key in guidance_store and guidance_store[g_key]:
-                                goal += f"\n\nUser Guidance: {guidance_store[g_key][-1]}"
-                                guidance_store[g_key] = []
-                            else:
-                                test_steps.append({'step_number': step_num, 'action': 'stuck', 'reasoning': decision.reasoning, 'success': False, 'error': 'Waiting for human guidance'})
+                            evt = asyncio.Event()
+                            guidance_events[g_key] = evt
+                            print(f"[GUIDANCE] ⏳ Waiting for user guidance (timeout 120s)…")
+                            try:
+                                await asyncio.wait_for(evt.wait(), timeout=120)
+                                injected = guidance_text.pop(g_key, '')
+                                print(f"[GUIDANCE] ✅ Guidance received: {injected!r} — resuming loop")
+                                goal += f"\n\nUser Guidance: {injected}"
+                                guidance_events.pop(g_key, None)
+                                # continue the loop with injected guidance
+                            except asyncio.TimeoutError:
+                                print(f"[GUIDANCE] ⏱  Timed out waiting for guidance — failing test {test_id}")
+                                test_steps.append({'step_number': step_num, 'action': 'stuck', 'reasoning': decision.reasoning, 'success': False, 'error': 'Timed out waiting for human guidance'})
                                 break
+                            continue
 
                         if decision.goal_complete or decision.action == OrchestratorActionType.DONE:
                             test_passed = True
@@ -2814,7 +2880,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         coordinates = None
 
                         if decision.action == OrchestratorActionType.CLICK:
-                            detection = vision_agent.detect(screenshot, decision.target)
+                            detection = await asyncio.to_thread(vision_agent.detect, screenshot, decision.target)
                             if detection and detection.get("found"):
                                 screenshot_width, screenshot_height = get_screenshot_dimensions(screenshot, window)
                                 global_x, global_y = calculate_screen_coordinates(
@@ -2832,7 +2898,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                                 step_error = f"Element not found: {decision.target}"
 
                         elif decision.action == OrchestratorActionType.TYPE:
-                            detection = vision_agent.detect(screenshot, decision.target)
+                            detection = await asyncio.to_thread(vision_agent.detect, screenshot, decision.target)
                             if detection and detection.get("found"):
                                 screenshot_width, screenshot_height = get_screenshot_dimensions(screenshot, window)
                                 global_x, global_y = calculate_screen_coordinates(
@@ -2897,6 +2963,25 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
                         await asyncio.sleep(0.5)
 
+                        # Manual pause check — fires after every step on the Gemini path
+                        if pause_flags.get(context_id):
+                            print(f"[PAUSE] ⏸  Execution paused (Gemini) after step {step_num} for test {test_id}")
+                            p_evt = asyncio.Event()
+                            pause_resume_events[context_id] = p_evt
+                            yield f"data: {json.dumps({'event': 'paused', 'test_id': test_id, 'step_number': step_num})}\n\n"
+                            await asyncio.sleep(0)
+                            try:
+                                await asyncio.wait_for(p_evt.wait(), timeout=300)
+                            except asyncio.TimeoutError:
+                                print(f"[PAUSE] ⏱  Pause timed out for context {context_id} — resuming without guidance")
+                            if g := pause_guidance.pop(context_id, None):
+                                print(f"[PAUSE] ▶  Resuming (Gemini) with guidance: {g!r}")
+                                goal += f"\n\nUser Guidance: {g}"
+                            else:
+                                print(f"[PAUSE] ▶  Resuming (Gemini) without guidance")
+                            pause_flags.pop(context_id, None)
+                            pause_resume_events.pop(context_id, None)
+
                     except Exception as e:
                         import traceback
                         print(f"[EXECUTE] Exception in step {step_num}: {traceback.format_exc()}")
@@ -2958,6 +3043,12 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
             except Exception as e:
                 print(f"[EXECUTE] Cloud run update failed: {e}")
         
+        # Clean up all per-context state
+        abort_flags.pop(context_id, None)
+        pause_flags.pop(context_id, None)
+        pause_resume_events.pop(context_id, None)
+        pause_guidance.pop(context_id, None)
+
         suite_complete_event = {'event': 'suite_complete', 'passed': suite_results['passed'], 'failed': suite_results['failed'], 'skipped': suite_results['skipped'], 'total': len(test_cases)}
         yield f"data: {json.dumps(suite_complete_event)}\n\n"
         print(f"[EXECUTE] ===== Execution Finished =====")
@@ -2981,23 +3072,91 @@ class ProvideGuidanceRequest(BaseModel):
 @app.post("/feature/{context_id}/execute/{test_id}/guidance")
 async def provide_guidance(context_id: str, test_id: str, request: ProvideGuidanceRequest):
     """
-    Provide guidance to the agent when it's stuck during test execution.
-    
-    This allows the human to give direction when the agent emits a 'need_help' event.
+    Provide guidance when the agent emits a 'need_help' event (stuck or low-confidence).
+    Stores the guidance text and fires the asyncio.Event so the waiting loop resumes.
     """
     guidance_key = f"{context_id}:{test_id}"
-    
+
+    # Store text for the waiting loop to consume
+    guidance_text[guidance_key] = request.guidance
+
+    # Also keep the legacy list store for backward compat
     if guidance_key not in guidance_store:
         guidance_store[guidance_key] = []
-    
     guidance_store[guidance_key].append(request.guidance)
-    print(f"[GUIDANCE] Received guidance for {guidance_key}: {request.guidance}")
-    
+
+    # Wake the loop if it is currently waiting
+    if guidance_key in guidance_events:
+        guidance_events[guidance_key].set()
+        print(f"[GUIDANCE] ✅ Guidance received for {guidance_key} — event fired, loop resuming")
+    else:
+        print(f"[GUIDANCE] ✅ Guidance stored for {guidance_key} (no active wait yet): {request.guidance!r}")
+
     return {
         "success": True,
-        "message": "Guidance received. Agent will use this in the next step.",
+        "message": "Guidance received. Agent will resume now.",
         "guidance": request.guidance
     }
+
+
+class PauseExecutionRequest(BaseModel):
+    """Request body for pausing execution (no fields required)."""
+    pass
+
+
+class ResumeExecutionRequest(BaseModel):
+    """Request body for resuming execution after a manual pause."""
+    guidance: Optional[str] = None
+
+
+@app.post("/feature/{context_id}/execute/pause")
+async def pause_execution(context_id: str):
+    """
+    Signal the execution loop to pause after the current step completes.
+    The loop will emit a 'paused' SSE event and wait for a resume call.
+    """
+    pause_flags[context_id] = True
+    print(f"[PAUSE] ⏸  Pause requested for context {context_id} — agent will pause after current step")
+    return {"success": True, "message": "Pause signal sent. Agent will pause after the current step."}
+
+
+@app.post("/feature/{context_id}/execute/resume")
+async def resume_execution(context_id: str, request: ResumeExecutionRequest):
+    """
+    Resume execution after a manual pause, optionally injecting guidance text.
+    """
+    if request.guidance:
+        pause_guidance[context_id] = request.guidance
+
+    evt = pause_resume_events.get(context_id)
+    if evt:
+        evt.set()
+        print(f"[RESUME] ▶  Resumed context {context_id} — event fired, loop continuing")
+    else:
+        print(f"[RESUME] ▶  Resume called for context {context_id} but no active pause event found")
+    if request.guidance:
+        print(f"[RESUME]    Guidance injected: {request.guidance!r}")
+    return {"success": True, "message": "Execution resumed."}
+
+
+@app.post("/feature/{context_id}/execute/abort")
+async def abort_execution(context_id: str):
+    """
+    Immediately abort the execution loop for this context.
+    The loop checks this flag at the start of every step and will break out.
+    Any active pause-wait event is also fired so the loop isn't stuck waiting.
+    """
+    abort_flags[context_id] = True
+    # If the loop is currently waiting on a manual pause, unblock it so it can exit
+    evt = pause_resume_events.get(context_id)
+    if evt:
+        evt.set()
+    # If the loop is currently waiting on guidance, unblock that too
+    for key in list(guidance_events.keys()):
+        if key.startswith(f"{context_id}:"):
+            guidance_events[key].set()
+    print(f"[ABORT] 🛑  Abort requested for context {context_id} — loop will stop after current step")
+    return {"success": True, "message": "Abort signal sent."}
 
 
 # =============================================================================

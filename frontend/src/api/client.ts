@@ -641,6 +641,19 @@ export async function provideGuidance(
   return response.data;
 }
 
+export async function pauseExecution(contextId: string): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(`/feature/${contextId}/execute/pause`);
+  return response.data;
+}
+
+export async function resumeExecution(
+  contextId: string,
+  guidance?: string
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(`/feature/${contextId}/execute/resume`, { guidance: guidance ?? null });
+  return response.data;
+}
+
 export async function updateTestCase(
   contextId: string,
   testId: string,
@@ -690,6 +703,7 @@ export interface StepEvent {
   success: boolean;
   coordinates?: [number, number];
   error?: string;
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 export interface NeedHelpEvent {
@@ -699,6 +713,13 @@ export interface NeedHelpEvent {
   current_state: string;
   reasoning: string;
   question: string;
+  confidence?: 'high' | 'medium' | 'low';
+}
+
+export interface PausedEvent {
+  event: 'paused';
+  test_id: string;
+  step_number: number;
 }
 
 export interface TestCompleteEvent {
@@ -723,11 +744,18 @@ export interface TestSkipEvent {
   reason: string;
 }
 
+export interface AbortedEvent {
+  event: 'aborted';
+  test_id: string;
+}
+
 export type TestExecutionEvent =
   | TestSuiteStartEvent
   | TestStartEvent
   | StepEvent
   | NeedHelpEvent
+  | PausedEvent
+  | AbortedEvent
   | TestCompleteEvent
   | SuiteCompleteEvent
   | TestSkipEvent;
@@ -737,6 +765,8 @@ export interface ExecutionCallbacks {
   onTestStart?: (data: TestStartEvent) => void;
   onStep?: (data: StepEvent) => void;
   onNeedHelp?: (data: NeedHelpEvent) => void;
+  onPaused?: (data: PausedEvent) => void;
+  onAborted?: (data: AbortedEvent) => void;
   onTestComplete?: (data: TestCompleteEvent) => void;
   onSuiteComplete?: (data: SuiteCompleteEvent) => void;
   onTestSkip?: (data: TestSkipEvent) => void;
@@ -751,15 +781,22 @@ async function streamFetch(
   return fetch(`${baseUrl}${url}`, init);
 }
 
+export async function abortExecution(contextId: string): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(`/feature/${contextId}/execute/abort`);
+  return response.data;
+}
+
 export async function executeTestsStream(
   contextId: string,
   request: ExecuteTestsRequest,
-  callbacks: ExecutionCallbacks
+  callbacks: ExecutionCallbacks,
+  signal?: AbortSignal
 ): Promise<void> {
   const response = await streamFetch(`/feature/${contextId}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
+    signal,
   });
 
   if (!response.ok) {
@@ -801,6 +838,12 @@ export async function executeTestsStream(
                 case 'need_help':
                   callbacks.onNeedHelp?.(event);
                   break;
+                case 'paused':
+                  callbacks.onPaused?.(event);
+                  break;
+                case 'aborted':
+                  callbacks.onAborted?.(event);
+                  break;
                 case 'test_complete':
                   callbacks.onTestComplete?.(event);
                   break;
@@ -818,6 +861,10 @@ export async function executeTestsStream(
         }
       }
     }
+  } catch (e) {
+    // AbortError is expected when the user aborts — don't treat it as a real error
+    if (e instanceof Error && e.name === 'AbortError') return;
+    throw e;
   } finally {
     reader.releaseLock();
   }

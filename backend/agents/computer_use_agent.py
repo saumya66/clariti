@@ -1,3 +1,7 @@
+# NOT IN USE — legacy Gemini Computer Use agent for the old /auto endpoint (POC).
+# Current feature execution uses ClaudeComputerUseAgent (provider=claude)
+# or OrchestratorAgent+VisionAgent (provider=gemini) via /feature/{id}/execute.
+
 """
 Computer Use Agent
 

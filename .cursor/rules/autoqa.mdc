@@ -1,45 +1,440 @@
 ---
-alwaysApply: true
+alwaysApply: false
+---
+# Moonshot — Architecture & Flows Reference
+
+**Moonshot** is an AI-powered QA automation platform. It lets users create test suites from app screenshots/text context, generate test cases with AI, and execute them autonomously on real running apps using an AI vision agent.
+
 ---
 
-# AutoQA - Visual QA Agent
+## System Architecture
 
-This is a framework-agnostic Autonomous QA Agent that captures screenshots, analyzes UI with Gemini, and performs mouse/keyboard actions.
+Three independent services communicate to deliver the full product:
 
-## Project Structure
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Frontend  (React + Vite, runs in browser)                          │
+│  - User-facing UI                                                   │
+│  - Calls local backend via HTTP/SSE for AI + execution              │
+│  - Calls cloud backend directly for auth + data CRUD               │
+└──────────────────────┬──────────────────────┬───────────────────────┘
+                       │                      │
+          localhost:8000 (SSE+REST)     cloud HTTPS (REST)
+                       │                      │
+┌──────────────────────▼──────┐  ┌────────────▼──────────────────────┐
+│  Local Backend  (FastAPI)   │  │  Cloud Backend  (FastAPI+MongoDB) │
+│  - Runs on user's machine   │  │  - Hosted service                 │
+│  - Manages AI agents        │  │  - Auth (JWT)                     │
+│  - Captures screenshots     │  │  - Persistent data store          │
+│  - Executes mouse/keyboard  │  │  - Projects, Features,            │
+│  - Orchestrates test runs   │  │    TestCases, TestRuns, Results   │
+│  - Calls cloud to save data │  │                                   │
+└─────────────────────────────┘  └───────────────────────────────────┘
+```
 
-- [PROJECT_SPEC.md](mdc:PROJECT_SPEC.md) - Full specification document
-- `backend/` - Python FastAPI server
-  - `main.py` - FastAPI app with `/windows` and `/act` endpoints
-  - `vision.py` - Gemini integration for UI element detection
-  - `actions.py` - Mouse/keyboard actions (click, type, scroll)
-  - `windows.py` - Window management (list windows, get bounds)
-- `frontend/` - Electron + React app (Phase 2)
+---
 
-## Key Technical Rules
+## Frontend
 
-### Coordinate Math (CRITICAL)
-Gemini returns `[ymin, xmin, ymax, xmax]` in 0-1000 scale. Always:
-1. Calculate center point: `center_x = (xmin + xmax) / 2`
-2. Convert to window pixels: `local_x = (center_x / 1000) * window_width`
-3. Apply Retina scale factor: `global_x = window_left + (local_x / scale_factor)`
+### Tech Stack
 
-### Human Click Pattern
-Never use instant clicks. Always use:
+| Layer | Package |
+|-------|---------|
+| Framework | React 19 + Vite 7 |
+| Routing | TanStack Router (file-based, type-safe) |
+| Server state | TanStack React Query |
+| Client state | Zustand |
+| Styling | Tailwind CSS v4 + shadcn/ui (Radix primitives) |
+| HTTP | Axios (REST) + native `fetch` (SSE streams) |
+| Icons | lucide-react |
+| Animations | motion (Framer Motion) |
+
+### Route Tree
+
+```
+/                          → routes/index.tsx       (redirect to /app or /login)
+/login                     → routes/login.tsx        (auth page)
+/app                       → routes/app.tsx          (layout: sidebar + SidebarInset)
+  /app/                    → routes/app/index.tsx    (projects list)
+  /app/create              → routes/app/create.tsx   (free-form create, legacy)
+  /app/execute             → routes/app/execute.tsx  (test suite execution page)
+  /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard)
+    /app/projects/$projectId/          → $projectId/index.tsx    (project overview bento)
+    /app/projects/$projectId/context   → $projectId/context.tsx  (project AI context page)
+    /app/projects/$projectId/tests/    → $projectId/tests/index.tsx  (test suites list)
+    /app/projects/$projectId/tests/$featureId → $projectId/tests/$featureId.tsx  (suite detail)
+/execute                   → routes/execute.tsx      (redirects to /app/execute if logged in)
+```
+
+**Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper.
+
+### Frontend Directory Structure
+
+```
+src/
+├── api/
+│   ├── client.ts        # All API functions + types (Axios + SSE fetch)
+│   └── config.ts        # getBaseUrl() (local), getCloudBaseUrl() (cloud)
+├── components/
+│   ├── ui/              # shadcn primitives (button, dialog, breadcrumb, etc.)
+│   ├── app-sidebar.tsx  # Left nav: Projects, logo, user avatar
+│   ├── CreateTestFlow/  # Multi-step wizard modal for creating test suites
+│   ├── ProjectsSection/ # Projects list + project card
+│   ├── ExecutionPanel   # Legacy: free-form execution UI
+│   ├── WindowSelector   # Window picker list
+│   └── StatusBar        # Backend connection indicator
+├── hooks/
+│   ├── useProjectsQueries.ts  # All React Query hooks for projects/features/tests
+│   ├── useWindows.ts          # Fetches open OS windows from local backend
+│   ├── useAuthMutations.ts    # Login / logout mutations
+│   └── useBackendStatus.ts    # Polls /health on local backend
+├── routes/              # File-based route components (see route tree above)
+├── store/
+│   ├── authStore.ts                  # JWT token, user, skipped state (persisted)
+│   ├── useAppStore.ts                # Active sidebar section
+│   ├── executionStore.ts             # Free-form CU execution state (legacy)
+│   └── testSuiteExecutionStore.ts    # Test suite run state (test statuses, activity log)
+└── lib/
+    ├── utils.ts         # cn() for Tailwind class merging
+    └── queryClient.ts   # TanStack Query config
+```
+
+### State Management
+
+- **Zustand** — client/ephemeral state: auth token, execution progress, UI state
+- **TanStack React Query** — server state: projects, features, test cases (fetched + cached)
+- **SSE** — streaming AI progress events (context build, test generation, execution) via native `fetch`
+
+---
+
+## Key User Flows
+
+### Flow 1 — Auth
+
+```
+/login  →  POST /api/v1/auth/login (cloud)  →  JWT token stored in authStore
+                                             →  redirect to /app
+```
+
+Guest users can "skip" auth (`skipped = true` in authStore) but cannot use cloud-backed features.
+
+---
+
+### Flow 2 — Project Creation
+
+User fills project name + description + uploads images/text → AI processes them:
+
+```
+Frontend (ProjectsSection)
+  ↓  POST /cloud/project/create (local backend SSE)
+  ↓  streams: "Processing images..." → "Synthesising context..." → "Saving project..."
+
+Local Backend (/cloud/project/create)
+  1. Save images + texts as ContextItems  →  POST /api/v1/context-items/bulk (cloud)
+  2. Run ImageContextRetrieverAgent on each image  →  extract what each screen shows
+  3. Run _SynthAgent with all image contexts + text notes  →  produce context_summary prose
+  4. POST /api/v1/projects (cloud)  →  save { name, description, context_summary }
+  5. SSE done event  →  { project: { id, name, description, context_summary } }
+
+Frontend
+  →  React Query invalidates projects list  →  new project appears
+```
+
+**Key file:** `backend/main.py` → `cloud_create_project` endpoint
+
+---
+
+### Flow 3 — Project Context Update
+
+User revisits the project context page and uploads new/updated images + text:
+
+```
+Frontend (/app/projects/$projectId/context)
+  ↓  POST /cloud/project/{id}/update-context (local backend SSE)
+
+Local Backend
+  1. Delete old ContextItems for this project  →  DELETE /api/v1/context-items/by-project/{id} (cloud)
+  2. Save new ContextItems  →  POST /api/v1/context-items/bulk (cloud)
+  3. Run ImageContextRetrieverAgent + _SynthAgent  →  new context_summary
+  4. PATCH /api/v1/projects/{id}  →  update context_summary on cloud
+  5. SSE done event
+```
+
+**Key file:** `backend/main.py` → `cloud_update_project_context` endpoint
+
+---
+
+### Flow 4 — Test Suite Creation (CreateTestFlow modal)
+
+A 4-step wizard opened from the Test Suites page. All steps operate on a cloud Feature record.
+
+#### Step 1 — Feature Details
+User enters feature name + description → `POST /api/v1/features` (cloud, via `createCloudFeature` in `client.ts`) → `cloudFeatureId` stored in component state.
+
+#### Step 2 — Select Assets
+User uploads images and/or text notes. These are passed to the context-building step.
+
+#### Step 3 — Build Context (SSE)
+
+```
+Frontend  →  POST /cloud/feature/{featureId}/build-context (local backend SSE)
+             body: { images[], texts[], user_feedback? }
+
+Local Backend
+  IF user_feedback is present (context rebuild):
+    1. Fetch existing feature.context_summary from cloud
+    2. Build refine_prompt: existing_summary + user_feedback
+    3. Run _SynthAgent with refine_prompt  →  updated context_summary (skip image re-analysis)
+  
+  ELSE (initial build):
+    1. Save images + texts as ContextItems  →  cloud
+    2. Run ImageContextRetrieverAgent on each image  →  per-image context
+    3. Run _SynthAgent combining all image contexts + text notes  →  context_summary
+  
+  4. PATCH /api/v1/features/{id}  →  save context_summary, status = "context_ready"
+  5. SSE done  →  { context_summary }
+
+Frontend
+  →  shows context_summary prose in Step 3 review panel
+  →  user can provide feedback and hit "Rebuild context" to iterate
+  →  when happy: clicks "Awesome! Generate Tests"
+```
+
+#### Step 4 — Generate Tests (SSE)
+
+```
+Frontend  →  POST /cloud/feature/{featureId}/generate-tests (local backend SSE)
+             body: { project_id, token, provider, user_feedback? }
+
+Local Backend
+  1. Fetch project.context_summary + feature.context_summary from cloud
+  2. Build combined_context = { feature context + project context + user_feedback }
+  3. Run TestPlannerAgent.generate_from_feature_context(combined_context)
+     - LLM prompt includes: feature summary, project summary, optional USER FEEDBACK block
+     - Returns: { feature_summary, test_cases[], coverage_notes }
+  4. SSE done  →  { feature_summary, test_cases[], coverage_notes }
+
+Frontend
+  →  user reviews test cards (expandable, priority-colored left border)
+  →  can toggle individual tests in/out
+  →  "Not what you expected?" panel: type feedback → "Regenerate tests" re-calls this flow
+  →  "All Good, Save Tests" → calls saveFeatureTests
+```
+
+#### Save Tests
+
+```
+Frontend  →  saveFeatureTests(featureId, selectedTestCases, token)
+           →  DELETE /api/v1/test-cases/by-feature/{id} (cloud)  (clear old tests)
+           →  POST /api/v1/test-cases/bulk (cloud)               (save new tests)
+           →  PATCH /api/v1/features/{id}  status = "tests_generated"
+```
+
+**Key files:**
+- `frontend/src/components/CreateTestFlow/CreateTestFlow.tsx`
+- `backend/main.py` → `cloud_build_feature_context`, `cloud_generate_feature_tests`
+- `backend/agents/test_planner_agent.py`
+
+---
+
+### Flow 5 — Test Execution
+
+User clicks "Run All Tests" on the Test Suite detail page:
+
+#### 5a — Window Picker Modal
+- Fetches open OS windows via `GET /windows` (local backend)
+- User selects target window
+- On confirm: `router.navigate({ to: '/app/execute', search: { featureId, windowTitle, featureName } })`
+
+#### 5b — Execute Page Auto-Start
+
+```
+/app/execute?featureId=...&windowTitle=...&featureName=...
+
+Frontend (execute.tsx)
+  1. useFeatureTestCases(featureId)  →  load test cases from cloud
+  2. testSuiteExecutionStore.setInitialTests(testCases)  →  all tests set to "pending"
+  3. useEffect: when tests ready + status idle  →  startExecution()
+
+testSuiteExecutionStore.startExecution()
+  →  POST /feature/{featureId}/execute (local backend SSE)
+     body: { window_title, provider, cloud_feature_id, cloud_user_id, cloud_token }
+```
+
+#### 5c — Execution SSE Stream
+
+```
+Local Backend (/feature/{featureId}/execute)
+  1. Fetch test cases from cloud  (cloud_list_test_cases)
+  2. For each test case:
+     a. SSE: { event: "test_start", test_id, title, goal, test_number, total_tests }
+     b. OrchestratorAgent loop (max 30 steps):
+        - Capture screenshot of target window (mss library)
+        - Build prompt: test case goal + previous actions + user guidance (if any)
+        - Call LLM (Claude/Gemini) → decide next action
+        - Execute action (click/type/scroll/key) via pyautogui
+        - SSE: { event: "step", action, target, value, reasoning, success }
+        - If agent is stuck: SSE { event: "need_help", question }
+        - If goal_complete: break
+     c. SSE: { event: "test_complete", test_id, status: "passed"|"failed", conclusion }
+     d. Save TestResult to cloud
+  3. SSE: { event: "suite_complete", passed, failed, skipped, total }
+  4. Save TestRun to cloud
+
+Frontend (execute.tsx + testSuiteExecutionStore)
+  - Left panel: test list with live status icons (pending/running/passed/failed)
+  - Right panel: current test title + goal + expected result + live activity log + AI thinking
+```
+
+**Key files:**
+- `frontend/src/routes/app/execute.tsx`
+- `frontend/src/store/testSuiteExecutionStore.ts`
+- `backend/main.py` → `execute_tests_stream` endpoint
+- `backend/agents/orchestrator_agent.py`
+
+---
+
+## AI Agents (Local Backend)
+
+### ImageContextRetrieverAgent
+**File:** `backend/agents/` (called from `context_builder.py`)
+
+Takes a screenshot/image (base64) and extracts structured context:
+- Screens detected
+- UI elements visible
+- User flows implied
+- Requirements inferred
+
+Returns prose context for each image.
+
+### _SynthAgent
+**File:** `backend/main.py` (inline usage)
+
+Synthesises multiple image contexts + text notes into a single cohesive `context_summary` prose paragraph. Also used for feedback-based context refinement (skips image re-analysis).
+
+### TestPlannerAgent
+**File:** `backend/agents/test_planner_agent.py`
+
+Generates test cases from feature context. Accepts:
+- `context_summary` (feature)
+- `project_context` (project-level background)
+- `user_feedback` (optional correction to steer generation)
+
+Returns JSON: `{ feature_summary, test_cases[], coverage_notes }`.
+
+Each test case: `{ test_key, title, goal, description, category, priority, expected_result }`.
+
+### OrchestratorAgent
+**File:** `backend/agents/orchestrator_agent.py`
+
+Vision-based execution agent. Takes a screenshot + goal + action history, decides what to do next. Supports `left_click`, `type`, `scroll`, `key`, `screenshot`, `wait`, `stuck` (ask for help), `goal_complete`.
+
+**Providers:**
+- Claude (Anthropic) — pixel-accurate coordinates, works on any desktop app
+- Gemini (Google) — normalized coordinates (0-1000 scale), browser-optimized
+
+---
+
+## Local Backend Key Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/windows` | GET | List open OS windows with bounds |
+| `/health` | GET | Backend health check |
+| `/cloud/project/create` | POST (SSE) | Create project with AI context |
+| `/cloud/project/{id}/update-context` | POST (SSE) | Rebuild project context |
+| `/cloud/feature/{id}/build-context` | POST (SSE) | Build or rebuild feature context |
+| `/cloud/feature/{id}/generate-tests` | POST (SSE) | Generate test cases via AI |
+| `/feature/{id}/execute` | POST (SSE) | Execute test suite on a window |
+| `/cu` | POST (SSE) | Free-form CU execution (legacy) |
+
+All SSE endpoints stream `data: { event, ...payload }\n\n` lines.
+
+---
+
+## Cloud Backend Data Models
+
+| Model | Key Fields |
+|-------|------------|
+| `User` | `id`, `email`, `hashed_password` |
+| `Project` | `id`, `user_id`, `name`, `description`, `context_summary` |
+| `Feature` | `id`, `project_id`, `name`, `description`, `context_summary`, `status` |
+| `ContextItem` | `id`, `level` (project/feature), `level_id`, `type` (image/text), `content_b64`/`text` |
+| `TestCase` | `id`, `feature_id`, `test_key`, `title`, `goal`, `description`, `expected_result`, `priority`, `category` |
+| `TestRun` | `id`, `feature_id`, `status`, `passed`, `failed`, `skipped`, `total` |
+| `TestResult` | `id`, `test_run_id`, `test_case_id`, `status`, `conclusion`, `steps_executed` |
+
+**Feature statuses:** `draft` → `context_ready` → `tests_generated`
+
+---
+
+## Coordinate Math (Vision Agent — Critical)
+
+The local backend captures screenshots with `mss` (physical pixels) but window bounds come from macOS APIs in logical points. Gemini returns normalized `[ymin, xmin, ymax, xmax]` in 0–1000 scale.
+
+```python
+# 1. Parse Gemini bounding box
+ymin, xmin, ymax, xmax = gemini_box   # 0-1000 scale
+
+# 2. Get center in 0-1000 scale
+center_x = (xmin + xmax) / 2
+center_y = (ymin + ymax) / 2
+
+# 3. Convert to window pixels (local)
+local_x = (center_x / 1000) * window_width
+local_y = (center_y / 1000) * window_height
+
+# 4. Apply Retina scale factor + offset to global screen coords
+scale_factor = screenshot_width / window_bounds_width
+global_x = window_left + (local_x / scale_factor)
+global_y = window_top  + (local_y / scale_factor)
+```
+
+---
+
+## Human Click Pattern (Critical)
+
+Never use instant clicks — always simulate human timing:
+
 ```python
 pyautogui.moveTo(x, y, duration=0.2)
 pyautogui.mouseDown()
-time.sleep(0.1)
+time.sleep(0.1)   # debounce
 pyautogui.mouseUp()
 ```
 
-### Screenshots
-Use `mss` library, NOT `pyautogui.screenshot()` - it's faster and handles multi-monitor better.
+---
 
-### macOS Permissions
-App requires "Screen Recording" and "Accessibility" permissions.
+## Frontend API Conventions
 
-## API Endpoints
+- **REST calls** go through the Axios `apiClient` (local) or `cloudApiClient` (cloud) instances in `src/api/client.ts`
+- **SSE streams** use a custom `streamLocalFetch()` helper (native fetch, not Axios) because Axios does not support streaming
+- The local backend base URL is resolved dynamically via `getBaseUrl()` from `src/api/config.ts` (supports Electron IPC or HTTP)
+- All cloud API calls pass the JWT token from `useAuthStore` in the request body (not headers), since the local backend proxies them
 
-- `GET /windows` - List open windows with bounds
-- `POST /act` - Execute action (click/type/scroll) on target window
+---
+
+## Frontend — Reusable Query Hooks
+
+All React Query hooks live in `src/hooks/useProjectsQueries.ts`:
+
+| Hook | Purpose |
+|------|---------|
+| `useProjects()` | List all user projects |
+| `useProject(id)` | Single project |
+| `useProjectFeatures(projectId)` | List features for a project |
+| `useFeatureTestCases(featureId)` | List test cases for a feature |
+| `useBuildFeatureContext()` | Mutation: build/rebuild context (SSE) |
+| `useGenerateFeatureTests()` | Mutation: generate tests (SSE) |
+| `useCreateProject()` | Mutation: create project with AI context (SSE) |
+| `useUpdateProjectContext()` | Mutation: update project context (SSE) |
+
+---
+
+## macOS System Requirements
+
+The local backend requires macOS permissions:
+- **Screen Recording** — to capture window screenshots via `mss`
+- **Accessibility** — to control mouse/keyboard via `pyautogui`
+
+The backend checks for these on startup and emits warnings if missing.
