@@ -233,3 +233,40 @@ def create_test_result(
     }
     code, data = _request("POST", "/api/v1/test-results/", json=payload, token=token)
     return data if code in (200, 201) else None
+
+
+def create_test_result_early(
+    run_id: str,
+    test_case_id: str,
+    token: Optional[str] = None,
+) -> Optional[dict]:
+    """Create a TestResult with status='running' at test_start, before steps are known."""
+    payload = {
+        "run_id": run_id,
+        "test_case_id": test_case_id,
+        "status": "running",
+        "steps": [],
+        "steps_executed": 0,
+    }
+    code, data = _request("POST", "/api/v1/test-results/", json=payload, token=token)
+    return data if code in (200, 201) else None
+
+
+def append_test_result_step(
+    result_id: str,
+    step: dict,
+    token: Optional[str] = None,
+) -> bool:
+    """Append a single StepRecord to an existing TestResult (atomic $push)."""
+    code, _ = _request("POST", f"/api/v1/test-results/{result_id}/steps", json=step, token=token)
+    return code in (200, 201)
+
+
+def patch_test_result(
+    result_id: str,
+    token: Optional[str] = None,
+    **fields,
+) -> Optional[dict]:
+    """PATCH an existing TestResult (status, conclusion, steps_executed)."""
+    code, data = _request("PATCH", f"/api/v1/test-results/{result_id}", json=fields, token=token)
+    return data if code == 200 else None

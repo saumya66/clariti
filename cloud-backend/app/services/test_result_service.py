@@ -34,6 +34,13 @@ class TestResultService:
         doc["_id"] = result.inserted_id
         return doc_to_dict(doc)
 
+    def append_step(self, db: Database, *, id: str, step: dict) -> bool:
+        result = db[self.COL].update_one(
+            {"_id": ObjectId(id)},
+            {"$push": {"steps": step}}
+        )
+        return result.modified_count == 1
+
     def update(self, db: Database, *, id: str, **fields) -> Optional[dict]:
         db[self.COL].update_one({"_id": ObjectId(id)}, {"$set": fields})
         return self.get(db, id=id)

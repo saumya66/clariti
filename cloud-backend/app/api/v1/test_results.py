@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from pymongo.database import Database
 from typing import List
 
@@ -62,6 +62,21 @@ def get_test_result(
         raise HTTPException(status_code=404, detail="Test result not found")
     _verify_run_owner(db, result["run_id"], current_user["id"])
     return TestResult(**result)
+
+
+@router.post("/{result_id}/steps", status_code=200)
+def append_step(
+    result_id: str,
+    step: dict = Body(...),
+    db: Database = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    result = test_result_service.get(db, id=result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Test result not found")
+    _verify_run_owner(db, result["run_id"], current_user["id"])
+    test_result_service.append_step(db, id=result_id, step=step)
+    return {"ok": True}
 
 
 @router.patch("/{result_id}", response_model=TestResult)

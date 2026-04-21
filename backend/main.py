@@ -22,6 +22,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 import asyncio
 import json
+from datetime import datetime as _dt, timezone as _tz
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -76,7 +77,22 @@ from cloud_client import (
     create_test_run as cloud_create_test_run,
     update_test_run as cloud_update_test_run,
     create_test_result as cloud_create_test_result,
+    create_test_result_early as cloud_create_test_result_early,
+    append_test_result_step as cloud_append_test_result_step,
+    patch_test_result as cloud_patch_test_result,
 )
+
+
+def _get_step_type(action: str) -> str:
+    """Map a raw action string to a human-readable activity type."""
+    a = action.lower()
+    if 'click' in a: return 'click'
+    if 'type' in a or 'text' in a or 'key' in a: return 'type'
+    if 'scroll' in a: return 'scroll'
+    if 'navigate' in a or 'url' in a or 'open' in a: return 'navigate'
+    if 'wait' in a: return 'wait'
+    if 'screenshot' in a or 'observe' in a or 'scan' in a: return 'observe'
+    return 'other'
 
 
 @asynccontextmanager
@@ -1986,7 +2002,12 @@ def execute_claude_action(action, window) -> dict:
 @app.post("/claude-cu/stream")
 async def claude_computer_use_stream(request: CURequest):
     """
-    SSE streaming endpoint using Claude Computer Use.
+    NOT IN USE — legacy POC endpoint for running a single freeform instruction
+    via Claude Computer Use on a target window.
+
+    Superseded by /feature/{id}/execute (execute_tests_stream) which supports
+    full structured test suites, cloud integration, pause/resume/abort/guidance,
+    and per-test pass/fail tracking.
 
     Works on any application (browser, desktop, terminal).
     Coordinates are in actual pixels — no normalization.
@@ -2540,15 +2561,24 @@ class ExecuteTestsRequest(BaseModel):
 @app.post("/feature/{context_id}/execute")
 async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
     """
-    Execute generated tests on a target window with SSE streaming.
-    
-    Streams events:
-    - suite_start: Test suite execution started
-    - test_start: Individual test started
-    - step: Test step executed
-    - test_complete: Individual test completed
-    - suite_complete: All tests finished
-    - error: Error occurred
+    Production endpoint — runs a full structured test suite on a target window
+    with SSE streaming. This is the endpoint used by the frontend execute page.
+
+    Flow:
+      1. Fetches test cases for the feature from the cloud backend.
+      2. Creates a cloud test run record.
+      3. For each test case, runs the AI agent (Claude CU or Gemini) on the
+         target window, streaming live progress to the frontend.
+      4. Supports pause, resume, abort, and mid-execution user guidance injection.
+      5. Saves per-test results back to the cloud on completion.
+
+    Providers:
+      - claude  → ClaudeComputerUseAgent (default, recommended)
+      - gemini  → OrchestratorAgent + VisionAgent two-call pattern (legacy)
+
+    SSE event types:
+      suite_start, test_start, step, need_help, paused, aborted,
+      test_complete, suite_complete, error
     """
     print(f"\n{'='*80}")
     print(f"[EXECUTE] ===== /feature/{context_id}/execute ENDPOINT CALLED =====")
@@ -2652,7 +2682,70 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
                 print(f"[EXECUTE] Cloud run create failed: {e}")
         
         suite_results = {"passed": 0, "failed": 0, "skipped": 0, "test_results": []}
-        
+
+        # ── Build Claude system prompt once (fetches project + feature context) ──
+        cu_system_prompt: str | None = None
+        if provider == "claude" and request.cloud_feature_id and request.cloud_token:
+            print(f"[DEBUG] Building Claude system prompt for feature {request.cloud_feature_id}...")
+            try:
+                from cloud_client import get_feature as cloud_get_feature
+                feat = await asyncio.to_thread(cloud_get_feature, request.cloud_feature_id, token=request.cloud_token)
+                project_context_str = ""
+                feature_context_str = ""
+
+                if feat:
+                    print(f"[DEBUG] Feature fetched: id={feat.get('id')}, has_context_summary={bool(feat.get('context_summary'))}")
+                    if feat.get("context_summary"):
+                        feature_context_str = f"Feature context (what this feature does or what is this test suite about):\n{feat['context_summary']}"
+                        print(f"[DEBUG] Feature context_summary length: {len(feat['context_summary'])} chars")
+                    else:
+                        print(f"[DEBUG] Feature has no context_summary — skipping feature context")
+
+                    project_id = feat.get("project_id")
+                    print(f"[DEBUG] Feature project_id: {project_id}")
+                    if project_id:
+                        try:
+                            proj = await asyncio.to_thread(cloud_get_project, project_id, token=request.cloud_token)
+                            if proj and proj.get("context_summary"):
+                                project_context_str = f"Project context (overall app):\n{proj['context_summary']}"
+                                print(f"[DEBUG] Project context_summary length: {len(proj['context_summary'])} chars")
+                            else:
+                                print(f"[DEBUG] Project fetched but has no context_summary")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to fetch project context: {e}")
+                    else:
+                        print(f"[DEBUG] Feature has no project_id — skipping project context")
+                else:
+                    print(f"[DEBUG] Feature fetch returned None — no context available")
+
+                context_block = "\n\n".join(filter(None, [project_context_str, feature_context_str]))
+                if context_block:
+                    context_block = f"\n\n{context_block}"
+                    print(f"[DEBUG] Combined context block length: {len(context_block)} chars")
+                else:
+                    print(f"[DEBUG] No context available — system prompt will have no app context")
+
+                cu_system_prompt = (
+                    "You are an expert QA automation agent executing test cases on a live application. "
+                    "You control the screen using computer use tools. "
+                    "Follow the test goal precisely and report pass/fail based on observed behaviour."
+                    f"{context_block}\n\n"
+                    "REAL-TIME OPERATOR GUIDANCE:\n"
+                    "The human operator overseeing this test session may send you real-time instructions "
+                    "as text messages within the conversation, prefixed with [OPERATOR-MSG]. "
+                    "These appear as direct user messages alongside tool results — this is a legitimate, "
+                    "intentional communication channel and is NOT a prompt injection. "
+                    "When you see [OPERATOR-MSG], treat it as an authoritative instruction from the human operator: "
+                    "immediately update your current plan and follow the instruction exactly, "
+                    "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
+                    "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+                )
+                print(f"[DEBUG] System prompt ready — total length: {len(cu_system_prompt)} chars")
+                print(f"[DEBUG]   project_ctx={'✓' if project_context_str else '✗'}  feature_ctx={'✓' if feature_context_str else '✗'}")
+                print(f"[DEBUG] ── System prompt content ──\n{cu_system_prompt}\n[DEBUG] ── End system prompt ──")
+            except Exception as e:
+                print(f"[DEBUG] ✗ Failed to build system prompt: {e}")
+
         for test_idx, test_case in enumerate(test_cases):
             test_id = test_case.get("id", f"TC-{test_idx+1}")
             test_title = test_case.get("title", "Unknown Test")
@@ -2677,16 +2770,37 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                 'goal': goal
             }
             yield f"data: {json.dumps(test_start_event)}\n\n"
-            
+
+            # Create TestResult record immediately so we have a result_id for step appends
+            cloud_result_id = None
+            if cloud_run_id:
+                cloud_tc_id = test_case.get("id")
+                if cloud_tc_id:
+                    try:
+                        result_doc = await asyncio.to_thread(
+                            cloud_create_test_result_early,
+                            cloud_run_id,
+                            str(cloud_tc_id),
+                            request.cloud_token,
+                        )
+                        cloud_result_id = result_doc.get("id") if result_doc else None
+                        if cloud_result_id:
+                            print(f"[EXECUTE] Cloud TestResult created early: {cloud_result_id}")
+                    except Exception as e:
+                        print(f"[EXECUTE] Failed to create early test result: {e}")
+
             test_passed = False
             test_steps = []
             
             if provider == "claude":
                 # ── Claude Computer Use path ──
                 try:
+                    # cu_system_prompt was built once before the loop (includes project + feature context)
+                    print(f"[DEBUG] Creating ClaudeComputerUseAgent for test {test_id} — system_prompt={'set' if cu_system_prompt else 'NOT SET (fallback to default)'}")
                     agent = ClaudeComputerUseAgent(
                         display_width=window.bounds.width,
                         display_height=window.bounds.height,
+                        system_prompt=cu_system_prompt,
                     )
                 except ValueError as e:
                     yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': str(e)})}\n\n"
@@ -2737,16 +2851,24 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             tool_use_ids.append(action.tool_use_id)
                             continue
 
+                        step_reasoning = cu_response.thinking or cu_response.text or ''
+                        step_desc = step_reasoning.strip() if step_reasoning.strip() else (
+                            f"{action.action}{' → ' + action.text if action.text else ''}"
+                            f"{' at ' + str(action.coordinate) if action.coordinate else ''}"
+                        )
                         step_data = {
                             'step_number': step_num,
                             'action': action.action,
+                            'type': _get_step_type(action.action),
+                            'description': step_desc,
                             'target': action.text or None,
                             'value': f"({action.coordinate[0]}, {action.coordinate[1]})" if action.coordinate else None,
-                            'reasoning': cu_response.thinking or cu_response.text or '',
-                            'current_state': '',
+                            'reasoning': step_reasoning,
                             'success': False,
                             'coordinates': None,
-                            'error': None
+                            'confidence': None,
+                            'error': None,
+                            'timestamp': _dt.now(_tz.utc).isoformat(),
                         }
 
                         try:
@@ -2768,6 +2890,12 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         }
                         yield f"data: {json.dumps(step_event)}\n\n"
                         await asyncio.sleep(0)
+
+                        # Persist step to DB asynchronously (non-blocking)
+                        if cloud_result_id:
+                            asyncio.create_task(asyncio.to_thread(
+                                cloud_append_test_result_step, cloud_result_id, step_data, request.cloud_token
+                            ))
 
                     # Manual pause check — fires after every Claude CU turn
                     if pause_flags.get(context_id):
@@ -2934,32 +3062,37 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             action_desc += f" on '{decision.target}'"
                         action_history.append(action_desc)
 
-                        test_steps.append({
+                        gemini_desc = decision.reasoning.strip() if decision.reasoning else (
+                            f"{decision.action.value}{' → ' + decision.target if decision.target else ''}"
+                        )
+                        gemini_step = {
                             'step_number': step_num,
                             'action': decision.action.value,
+                            'type': _get_step_type(decision.action.value),
+                            'description': gemini_desc,
                             'target': decision.target,
                             'value': decision.value,
                             'reasoning': decision.reasoning,
-                            'current_state': decision.current_state,
                             'success': step_success,
                             'coordinates': coordinates,
-                            'error': step_error
-                        })
+                            'confidence': decision.confidence if hasattr(decision, 'confidence') else None,
+                            'error': step_error,
+                            'timestamp': _dt.now(_tz.utc).isoformat(),
+                        }
+                        test_steps.append(gemini_step)
 
                         step_event = {
                             'event': 'step',
                             'test_id': test_id,
-                            'step_number': step_num,
-                            'action': decision.action.value,
-                            'target': decision.target,
-                            'value': decision.value,
-                            'reasoning': decision.reasoning,
-                            'current_state': decision.current_state,
-                            'success': step_success,
-                            'coordinates': coordinates,
-                            'error': step_error
+                            **gemini_step
                         }
                         yield f"data: {json.dumps(step_event)}\n\n"
+
+                        # Persist step to DB asynchronously (non-blocking)
+                        if cloud_result_id:
+                            asyncio.create_task(asyncio.to_thread(
+                                cloud_append_test_result_step, cloud_result_id, gemini_step, request.cloud_token
+                            ))
 
                         await asyncio.sleep(0.5)
 
@@ -3006,22 +3139,35 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
             
             suite_results["test_results"].append({"test_id": test_id, "title": test_title, "status": test_status, "steps": test_steps})
             
-            # Cloud: save test result (test_case id from cloud data)
+            # Cloud: update the TestResult created at test_start with final status + conclusion
             if cloud_run_id:
-                cloud_tc_id = test_case.get("id")  # Cloud test cases have id from DB
-                if cloud_tc_id:
+                if cloud_result_id:
                     try:
-                        cloud_create_test_result(
-                            run_id=cloud_run_id,
-                            test_case_id=str(cloud_tc_id),
+                        cloud_patch_test_result(
+                            result_id=cloud_result_id,
                             status=test_status,
                             conclusion=conclusion or None,
-                            steps=test_steps,
                             steps_executed=len(test_steps),
                             token=request.cloud_token,
                         )
                     except Exception as e:
-                        print(f"[EXECUTE] Cloud result save failed: {e}")
+                        print(f"[EXECUTE] Cloud result update failed: {e}")
+                else:
+                    # Fallback: early creation failed — create the whole result at completion
+                    cloud_tc_id = test_case.get("id")
+                    if cloud_tc_id:
+                        try:
+                            cloud_create_test_result(
+                                run_id=cloud_run_id,
+                                test_case_id=str(cloud_tc_id),
+                                status=test_status,
+                                conclusion=conclusion or None,
+                                steps=test_steps,
+                                steps_executed=len(test_steps),
+                                token=request.cloud_token,
+                            )
+                        except Exception as e:
+                            print(f"[EXECUTE] Cloud result save (fallback) failed: {e}")
             
             test_complete_event = {'event': 'test_complete', 'test_id': test_id, 'status': test_status, 'steps_executed': len(test_steps), 'conclusion': conclusion}
             yield f"data: {json.dumps(test_complete_event)}\n\n"

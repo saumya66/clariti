@@ -57,16 +57,18 @@ Three independent services communicate to deliver the full product:
 /app                       → routes/app.tsx          (layout: sidebar + SidebarInset)
   /app/                    → routes/app/index.tsx    (projects list)
   /app/create              → routes/app/create.tsx   (free-form create, legacy)
-  /app/execute             → routes/app/execute.tsx  (test suite execution page)
-  /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard)
+  /app/execute             → routes/app/execute.tsx  (test suite execution + replay page)
+  /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard — Outlet only)
     /app/projects/$projectId/          → $projectId/index.tsx    (project overview bento)
     /app/projects/$projectId/context   → $projectId/context.tsx  (project AI context page)
     /app/projects/$projectId/tests/    → $projectId/tests/index.tsx  (test suites list)
-    /app/projects/$projectId/tests/$featureId → $projectId/tests/$featureId.tsx  (suite detail)
+    /app/projects/$projectId/tests/$featureId → $projectId/tests/$featureId.tsx  (layout guard — Outlet only)
+      /app/projects/$projectId/tests/$featureId/       → $featureId/index.tsx   (suite detail page)
+      /app/projects/$projectId/tests/$featureId/runs/  → $featureId/runs/index.tsx  (past runs list)
 /execute                   → routes/execute.tsx      (redirects to /app/execute if logged in)
 ```
 
-**Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper.
+**Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper. Both `$projectId.tsx` and `$featureId.tsx` are pure layout guards that only render `<Outlet />`.
 
 ### Frontend Directory Structure
 
@@ -85,7 +87,7 @@ src/
 │   └── StatusBar        # Backend connection indicator
 ├── hooks/
 │   ├── useProjectsQueries.ts  # All React Query hooks for projects/features/tests
-│   ├── useWindows.ts          # Fetches open OS windows from local backend
+│   ├── useWindows.ts          # Fetches open OS windows (always fresh, no cache)
 │   ├── useAuthMutations.ts    # Login / logout mutations
 │   └── useBackendStatus.ts    # Polls /health on local backend
 ├── routes/              # File-based route components (see route tree above)
@@ -93,7 +95,7 @@ src/
 │   ├── authStore.ts                  # JWT token, user, skipped state (persisted)
 │   ├── useAppStore.ts                # Active sidebar section
 │   ├── executionStore.ts             # Free-form CU execution state (legacy)
-│   └── testSuiteExecutionStore.ts    # Test suite run state (test statuses, activity log)
+│   └── testSuiteExecutionStore.ts    # Test suite run state (test statuses, activity log, guided execution)
 └── lib/
     ├── utils.ts         # cn() for Tailwind class merging
     └── queryClient.ts   # TanStack Query config
@@ -185,18 +187,18 @@ Local Backend
     1. Fetch existing feature.context_summary from cloud
     2. Build refine_prompt: existing_summary + user_feedback
     3. Run _SynthAgent with refine_prompt  →  updated context_summary (skip image re-analysis)
-  
+
   ELSE (initial build):
     1. Save images + texts as ContextItems  →  cloud
     2. Run ImageContextRetrieverAgent on each image  →  per-image context
     3. Run _SynthAgent combining all image contexts + text notes  →  context_summary
-  
+
   4. PATCH /api/v1/features/{id}  →  save context_summary, status = "context_ready"
   5. SSE done  →  { context_summary }
 
 Frontend
   →  shows context_summary prose in Step 3 review panel
-  →  user can provide feedback and hit "Rebuild context" to iterate
+  →  user can provide feedback and hit "Rebuild context" to iterate (skips image re-analysis)
   →  when happy: clicks "Awesome! Generate Tests"
 ```
 
@@ -239,58 +241,252 @@ Frontend  →  saveFeatureTests(featureId, selectedTestCases, token)
 
 ### Flow 5 — Test Execution
 
-User clicks "Run All Tests" on the Test Suite detail page:
+User clicks "Run All Tests" on the Test Suite detail page.
 
 #### 5a — Window Picker Modal
-- Fetches open OS windows via `GET /windows` (local backend)
+- Fetches open OS windows via `GET /windows` (local backend, always fresh — `staleTime: 0`)
 - User selects target window
-- On confirm: `router.navigate({ to: '/app/execute', search: { featureId, windowTitle, featureName } })`
+- On confirm: `router.navigate({ to: '/app/execute', search: { featureId, projectId, windowTitle, featureName } })`
 
 #### 5b — Execute Page Auto-Start
 
 ```
-/app/execute?featureId=...&windowTitle=...&featureName=...
+/app/execute?featureId=...&projectId=...&windowTitle=...&featureName=...
 
 Frontend (execute.tsx)
-  1. useFeatureTestCases(featureId)  →  load test cases from cloud
-  2. testSuiteExecutionStore.setInitialTests(testCases)  →  all tests set to "pending"
-  3. useEffect: when tests ready + status idle  →  startExecution()
+  - On mount: reset() clears any previous run state in the store
+  - useFeatureTestCases(featureId)  →  load test cases from cloud
+  - testSuiteExecutionStore.setInitialTests(testCases)  →  all tests set to "pending"
+  - useEffect: when tests ready + status === "idle"  →  startExecution()
+  - On unmount: reset() so the next visit always starts fresh
 
 testSuiteExecutionStore.startExecution()
+  →  creates a fresh AbortController (_abortController)
   →  POST /feature/{featureId}/execute (local backend SSE)
-     body: { window_title, provider, cloud_feature_id, cloud_user_id, cloud_token }
+     body: { window_title, provider: "claude", cloud_feature_id, cloud_user_id, cloud_token }
 ```
 
 #### 5c — Execution SSE Stream
 
 ```
-Local Backend (/feature/{featureId}/execute)
-  1. Fetch test cases from cloud  (cloud_list_test_cases)
-  2. For each test case:
-     a. SSE: { event: "test_start", test_id, title, goal, test_number, total_tests }
-     b. OrchestratorAgent loop (max 30 steps):
-        - Capture screenshot of target window (mss library)
-        - Build prompt: test case goal + previous actions + user guidance (if any)
-        - Call LLM (Claude/Gemini) → decide next action
-        - Execute action (click/type/scroll/key) via pyautogui
-        - SSE: { event: "step", action, target, value, reasoning, success }
-        - If agent is stuck: SSE { event: "need_help", question }
-        - If goal_complete: break
-     c. SSE: { event: "test_complete", test_id, status: "passed"|"failed", conclusion }
-     d. Save TestResult to cloud
-  3. SSE: { event: "suite_complete", passed, failed, skipped, total }
-  4. Save TestRun to cloud
+Local Backend (/feature/{featureId}/execute  →  execute_tests_stream generator)
+
+  PRE-LOOP: Build Claude system prompt (once, before iterating tests)
+    1. Fetch feature.context_summary from cloud
+    2. Fetch project.context_summary from cloud (via feature.project_id)
+    3. Construct cu_system_prompt:
+       - Agent role + instructions
+       - Project context block
+       - Feature context block
+       - Pre-authorisation of [OPERATOR-MSG] guidance channel
+
+  FOR EACH test_case:
+    a. SSE: { event: "test_start", test_id, title, goal, test_number, total_tests }
+    b. POST /api/v1/test-results/ (cloud) with status="running"  →  get cloud_result_id
+       (early creation so steps can be appended in real-time)
+    c. Check abort_flags[context_id]  →  break if set
+    d. Initialise ClaudeComputerUseAgent(system_prompt=cu_system_prompt)
+    e. agent.start(goal, screenshot)  →  first action
+    f. STEP LOOP:
+       - await asyncio.to_thread(agent.step, tool_use_ids, screenshot)
+       - Execute action via pyautogui (wrapped in asyncio.to_thread)
+       - Build StepRecord dict: { step_number, action, type, description, target, value,
+                                  reasoning, success, coordinates, confidence, error, timestamp }
+       - SSE: { event: "step", ...StepRecord }   ← same shape as what's stored in DB
+       - asyncio.create_task → append StepRecord to cloud TestResult (non-blocking)
+       - Check pause_flags[context_id]:
+           → If set: SSE { event: "paused" }
+                     await asyncio.Event (pause_resume_events[context_id])
+                     inject any pause_guidance via agent.inject_guidance()
+       - Check abort_flags[context_id]  →  break if set
+       - If is_done: break
+    g. SSE: { event: "test_complete", test_id, status, conclusion }
+    h. PATCH cloud TestResult (cloud_result_id) with final status, conclusion, steps_executed
+
+  POST-LOOP:
+    SSE: { event: "suite_complete", passed, failed, skipped, total }
+    POST TestRun to cloud
+    Clean up all per-context state (abort_flags, pause_flags, events, etc.)
 
 Frontend (execute.tsx + testSuiteExecutionStore)
-  - Left panel: test list with live status icons (pending/running/passed/failed)
-  - Right panel: current test title + goal + expected result + live activity log + AI thinking
+  Left panel:
+    - Test list with live status icons + clickable rows for history browsing
+    - Progress bar
+    - Suite complete / aborted / error banners
+    - Footer: Pause & Guide / Abort Run (while running), Run Again / Back to Suite (when done)
+
+  Right panel:
+    - Displays the "selected" test (selectedTestId) or the live current test if none selected
+    - Test header: name, goal, expected result, status badge, conclusion when available
+    - Activity log filtered to the displayed test's entries (each ActivityEntry carries testId)
+    - AI Reasoning (thinking) collapsible panel
+    - GuidancePanel (when isPaused or guidanceNeeded)
+    - "Back to live" banner when user is browsing history during an active run
 ```
+
+#### 5d — Guided Execution (Pause & Guide)
+
+The execution loop truly awaits user input via `asyncio.Event` — it does not poll or time out quickly.
+
+**Auto-pause (agent stuck / low confidence):**
+```
+Backend OrchestratorAgent  →  returns confidence = "low" or action = "stuck"
+  →  SSE: { event: "need_help", test_id, question, current_state, confidence }
+  →  guidance_events[key] = asyncio.Event()
+  →  await asyncio.wait_for(evt.wait(), timeout=120)   ← loop truly blocks here
+
+Frontend
+  →  store sets guidanceNeeded = { testId, question, currentState }
+  →  GuidancePanel shown to user
+
+User submits guidance text
+  →  POST /feature/{id}/execute/guidance  { test_id, guidance }
+  →  Backend: guidance_text[key] = guidance; guidance_events[key].set()
+  →  Loop resumes; guidance injected into next agent call via agent.inject_guidance()
+```
+
+**Manual pause (user clicks "Pause & Guide"):**
+```
+Frontend
+  →  isPausePending = true  (immediate visual feedback — button changes to spinner)
+  →  POST /feature/{id}/execute/pause
+  →  Backend: pause_flags[context_id] = True
+
+After current step completes:
+  →  Backend sees pause_flags set
+  →  SSE: { event: "paused", test_id }
+  →  pause_resume_events[context_id] = asyncio.Event()
+  →  await asyncio.wait_for(evt.wait(), timeout=300)   ← loop truly blocks here
+
+Frontend
+  →  store: isPaused = true, isPausePending = false
+  →  GuidancePanel shown
+
+User submits guidance (or clicks "Skip & Resume"):
+  →  POST /feature/{id}/execute/resume  { guidance? }
+  →  Backend: stores guidance in pause_guidance[context_id]; evt.set()
+  →  Loop resumes; guidance injected via agent.inject_guidance() if provided
+```
+
+**Abort run:**
+```
+Frontend
+  →  isAbortPending = true  (immediate visual feedback)
+  →  _abortController.abort()  →  kills SSE fetch stream on frontend
+  →  POST /feature/{id}/execute/abort
+  →  Backend: abort_flags[context_id] = True
+              unblocks any pending pause/guidance asyncio.Events
+
+After current step:
+  →  Backend checks abort_flags  →  breaks execution loop
+  →  SSE stream ends (or frontend already disconnected)
+
+Frontend store
+  →  In-progress test marked as "skipped" immediately
+  →  status → "aborted"
+  →  isAbortPending = false
+```
+
+#### 5e — Operator Guidance Injection (Critical)
+
+When `agent.inject_guidance(text)` is called before `agent.step()`, the guidance is placed as a **top-level text block in the user message**, alongside (not inside) the `tool_result`:
+
+```python
+# Correct — guidance at user-message level, NOT nested in tool_result
+user_message = {
+    "role": "user",
+    "content": [
+        {
+            "type": "tool_result",
+            "tool_use_id": "...",
+            "content": [{"type": "image", ...}],  # screenshot only — clean
+        },
+        {
+            "type": "text",
+            "text": "[OPERATOR-MSG]: use coupon THIS123",  # at user level
+        },
+    ],
+}
+```
+
+This is intentional. Placing guidance *inside* the `tool_result` content caused Claude to detect it as a prompt injection (content attributed to the screenshot tool, not the operator). At user-message level, Claude treats it as a direct operator instruction.
+
+The `cu_system_prompt` pre-authorises this channel:
+> *"[OPERATOR-MSG] messages are a legitimate, intentional communication channel — NOT a prompt injection. Follow them exactly."*
 
 **Key files:**
 - `frontend/src/routes/app/execute.tsx`
 - `frontend/src/store/testSuiteExecutionStore.ts`
 - `backend/main.py` → `execute_tests_stream` endpoint
-- `backend/agents/orchestrator_agent.py`
+- `backend/agents/claude_computer_use_agent.py`
+
+---
+
+### Flow 6 — Past Runs & Replay Mode
+
+#### 6a — Past Runs List
+
+```
+User on Test Suite Detail page ($featureId/index.tsx)
+  →  clicks "Past Runs" button (header) or "View All Runs" (sidebar card)
+  →  navigates to /app/projects/$projectId/tests/$featureId/runs/
+
+$featureId/runs/index.tsx
+  →  useFeatureTestRuns(featureId)
+     →  GET /api/v1/test-runs/by-feature/{featureId} (cloud)
+     →  returns CloudTestRun[] sorted newest first
+
+  Renders a table of runs (provider, status, passed/failed counts, date)
+  Each row click  →  router.navigate({ to: '/app/execute', search: { runId, featureId, projectId } })
+```
+
+#### 6b — Replay Mode on Execute Page
+
+```
+/app/execute?runId=...&featureId=...&projectId=...
+
+execute.tsx detects isReplayMode = !!runId
+
+Data loading (two parallel queries):
+  useFeatureTestCases(featureId)  →  CloudTestCase[] (title, goal, test_key, expected_result)
+  useTestRunDetail(runId)         →  CloudTestRunDetail (run metadata + results[])
+
+  Each CloudTestResult contains:
+    - test_case_id, status, conclusion, steps_executed
+    - steps: StepRecord[]   ← same shape as live SSE steps
+
+Once both are loaded:
+  loadPastRun(testCases, runDetail) is called on the store
+
+  Inside loadPastRun():
+    1. Build tcMap: { [test_case_id]: CloudTestCase } for O(1) lookup
+    2. Map runDetail.results → tests[]: TestRun[]
+       (merge TestResult status/conclusion with TestCase title/goal/test_key)
+    3. Map each result's steps → ActivityEntry[] with testId set
+    4. Populate activityLog with all steps across all results
+    5. Reset all live-execution state (thinking, error, guidanceNeeded, isPaused, etc.)
+    6. Set status = 'complete'
+
+  Auto-select first test so the right panel is populated immediately
+```
+
+**Replay UI differences vs. live execution:**
+- "Replay" badge instead of "Live" / "Running" status indicator
+- Window title area shows "Run ID: [last 8 chars]" instead of target window name
+- No Pause / Abort / Run Again controls shown
+- Guidance panel suppressed
+- "Back to Test Suite" footer link points to the runs list (`/$featureId/runs`)
+- All test rows are immediately clickable (no pending state)
+
+**Key design principle — unified rendering:**  
+The `StepRecord` shape is identical whether the step comes from a live SSE `step` event or from the API's `TestResult.steps` array. `ActivityEntry extends Partial<StepRecord>`, so the same activity log component renders both live and replay data without any conditional logic.
+
+**Key files:**
+- `frontend/src/routes/app/projects/$projectId/tests/$featureId/runs/index.tsx`
+- `frontend/src/routes/app/execute.tsx` (replay mode logic)
+- `frontend/src/store/testSuiteExecutionStore.ts` → `loadPastRun`
+- `frontend/src/hooks/useProjectsQueries.ts` → `useFeatureTestRuns`, `useTestRunDetail`
+- `frontend/src/api/client.ts` → `CloudTestRun`, `CloudTestResult`, `CloudTestRunDetail`, `listTestRunsByFeature`, `getTestRunDetail`
 
 ---
 
@@ -310,7 +506,7 @@ Returns prose context for each image.
 ### _SynthAgent
 **File:** `backend/main.py` (inline usage)
 
-Synthesises multiple image contexts + text notes into a single cohesive `context_summary` prose paragraph. Also used for feedback-based context refinement (skips image re-analysis).
+Synthesises multiple image contexts + text notes into a single cohesive `context_summary` prose paragraph. Also used for feedback-based context refinement (skips image re-analysis when `user_feedback` is provided).
 
 ### TestPlannerAgent
 **File:** `backend/agents/test_planner_agent.py`
@@ -324,14 +520,23 @@ Returns JSON: `{ feature_summary, test_cases[], coverage_notes }`.
 
 Each test case: `{ test_key, title, goal, description, category, priority, expected_result }`.
 
-### OrchestratorAgent
-**File:** `backend/agents/orchestrator_agent.py`
+**Default model:** `claude-haiku-4-5` (cost-optimised for text generation).
 
-Vision-based execution agent. Takes a screenshot + goal + action history, decides what to do next. Supports `left_click`, `type`, `scroll`, `key`, `screenshot`, `wait`, `stuck` (ask for help), `goal_complete`.
+### ClaudeComputerUseAgent
+**File:** `backend/agents/claude_computer_use_agent.py`
 
-**Providers:**
-- Claude (Anthropic) — pixel-accurate coordinates, works on any desktop app
-- Gemini (Google) — normalized coordinates (0-1000 scale), browser-optimized
+Production execution agent. Uses Anthropic's native Computer Use beta to control any macOS application via pixel-accurate coordinates. Unlike Gemini, it works on any desktop app, not just browsers.
+
+**Key behaviours:**
+- Accepts an optional `system_prompt` at init (the rich `cu_system_prompt` built from project + feature context)
+- `start(goal, screenshot_bytes)` — begins a task, returns `ClaudeCUResponse`
+- `step(tool_use_ids, screenshot_bytes)` — continues after executing actions
+- `inject_guidance(text)` — queues operator guidance to be sent in the next `step()` call as a top-level user message text block
+- Runs synchronous Anthropic API calls via `await asyncio.to_thread()` to avoid blocking the FastAPI event loop (critical for pause/abort to work)
+
+**Default model:** `claude-haiku-4-5`
+**Beta flag:** `computer-use-2025-01-24`
+**Tool version:** `computer_20250124`
 
 ---
 
@@ -339,16 +544,42 @@ Vision-based execution agent. Takes a screenshot + goal + action history, decide
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/windows` | GET | List open OS windows with bounds |
+| `/windows` | GET | List currently open OS windows with bounds |
 | `/health` | GET | Backend health check |
+| `/permissions` | GET | Check Screen Recording + Accessibility grants |
 | `/cloud/project/create` | POST (SSE) | Create project with AI context |
 | `/cloud/project/{id}/update-context` | POST (SSE) | Rebuild project context |
 | `/cloud/feature/{id}/build-context` | POST (SSE) | Build or rebuild feature context |
 | `/cloud/feature/{id}/generate-tests` | POST (SSE) | Generate test cases via AI |
-| `/feature/{id}/execute` | POST (SSE) | Execute test suite on a window |
-| `/cu` | POST (SSE) | Free-form CU execution (legacy) |
+| `/feature/{id}/execute` | POST (SSE) | **Production** — execute test suite on a window |
+| `/feature/{id}/execute/pause` | POST | Signal backend to pause after current step |
+| `/feature/{id}/execute/resume` | POST | Resume a paused execution (optional guidance) |
+| `/feature/{id}/execute/abort` | POST | Abort execution loop immediately |
+| `/feature/{id}/execute/guidance` | POST | Inject user guidance when agent is stuck |
+| `/cu` | POST (SSE) | Legacy POC — free-form CU, not used in production |
 
 All SSE endpoints stream `data: { event, ...payload }\n\n` lines.
+
+**`backend/cloud_client.py` — helpers for test run persistence:**
+
+| Function | Purpose |
+|----------|---------|
+| `create_test_result_early(run_id, test_case_id, token)` | Creates `TestResult` with `status="running"` at test start; returns `{ id, ... }` |
+| `append_test_result_step(result_id, step, token)` | Calls `POST /api/v1/test-results/{id}/steps` to atomically push one step dict |
+| `patch_test_result(result_id, token, **fields)` | PATCH final `status`, `conclusion`, `steps_executed` on completion |
+
+**Per-execution in-memory state (keyed by `context_id`):**
+
+| Dict | Purpose |
+|------|---------|
+| `pause_flags` | Set to `True` to request a pause |
+| `pause_resume_events` | `asyncio.Event` the loop awaits when paused |
+| `pause_guidance` | Optional guidance text to inject on resume |
+| `guidance_events` | `asyncio.Event` the loop awaits when agent is stuck |
+| `guidance_text` | Guidance text submitted by user for stuck agent |
+| `abort_flags` | Set to `True` to break the execution loop |
+
+All dicts are cleaned up after the execution generator finishes.
 
 ---
 
@@ -361,34 +592,57 @@ All SSE endpoints stream `data: { event, ...payload }\n\n` lines.
 | `Feature` | `id`, `project_id`, `name`, `description`, `context_summary`, `status` |
 | `ContextItem` | `id`, `level` (project/feature), `level_id`, `type` (image/text), `content_b64`/`text` |
 | `TestCase` | `id`, `feature_id`, `test_key`, `title`, `goal`, `description`, `expected_result`, `priority`, `category` |
-| `TestRun` | `id`, `feature_id`, `status`, `passed`, `failed`, `skipped`, `total` |
-| `TestResult` | `id`, `test_run_id`, `test_case_id`, `status`, `conclusion`, `steps_executed` |
+| `TestRun` | `id`, `feature_id`, `provider`, `model`, `target_window`, `status`, `passed`, `failed`, `skipped`, `total_tests`, `started_at`, `completed_at`, `created_at` |
+| `TestResult` | `id`, `run_id`, `test_case_id`, `status`, `conclusion`, `steps: StepRecord[]`, `steps_executed`, `error`, `created_at` |
 
 **Feature statuses:** `draft` → `context_ready` → `tests_generated`
 
+**`StepRecord` — the unified step shape** (used in both live SSE stream and DB storage):
+```typescript
+{
+  step_number: number;
+  action: string;          // raw action name e.g. "left_click"
+  type: string;            // generalised type e.g. "click" | "scroll" | "type" | ...
+  description: string;     // human-readable reasoning for this step
+  target?: string | null;
+  value?: string | null;
+  reasoning: string;
+  success: boolean;
+  coordinates?: [number, number] | null;
+  confidence?: string | null;
+  error?: string | null;
+  timestamp: string;       // UTC ISO string
+}
+```
+
+This shape is the contract between backend (SSE `step` events + DB writes) and frontend (`ActivityEntry`, `StepEvent`). Both live and replay rendering use the same component code because the data shape is identical.
+
+**Cloud backend endpoints relevant to runs/results:**
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `GET /api/v1/test-runs/by-feature/{featureId}` | GET | List all runs for a feature (sorted newest first) |
+| `GET /api/v1/test-runs/{runId}/detail` | GET | Full run + all `TestResult` objects with steps |
+| `POST /api/v1/test-results/` | POST | Create a `TestResult` (called at test_start, status="running") |
+| `POST /api/v1/test-results/{id}/steps` | POST | Atomically `$push` one step to the steps array |
+| `PATCH /api/v1/test-results/{id}` | PATCH | Update final status, conclusion, steps_executed |
+
 ---
 
-## Coordinate Math (Vision Agent — Critical)
+## Coordinate Math (Claude CU — Critical)
 
-The local backend captures screenshots with `mss` (physical pixels) but window bounds come from macOS APIs in logical points. Gemini returns normalized `[ymin, xmin, ymax, xmax]` in 0–1000 scale.
+Claude CU uses **actual pixel coordinates** matching the logical window size. The backend resizes each screenshot to the window's logical dimensions before sending to Claude, so Claude's coordinates map 1:1 to window-local pixels with no additional scaling.
 
 ```python
-# 1. Parse Gemini bounding box
-ymin, xmin, ymax, xmax = gemini_box   # 0-1000 scale
+# In ClaudeComputerUseAgent — screenshot is resized to display_width x display_height
+# so Claude's (x, y) coordinates are directly window-local pixels.
 
-# 2. Get center in 0-1000 scale
-center_x = (xmin + xmax) / 2
-center_y = (ymin + ymax) / 2
-
-# 3. Convert to window pixels (local)
-local_x = (center_x / 1000) * window_width
-local_y = (center_y / 1000) * window_height
-
-# 4. Apply Retina scale factor + offset to global screen coords
-scale_factor = screenshot_width / window_bounds_width
-global_x = window_left + (local_x / scale_factor)
-global_y = window_top  + (local_y / scale_factor)
+# To convert to global screen coordinates for pyautogui:
+global_x = window_left + action_x
+global_y = window_top  + action_y
 ```
+
+On Retina displays the raw `mss` screenshot is 2× the logical size. The `resize_screenshot()` helper in `claude_computer_use_agent.py` handles this by resizing to `(display_width, display_height)` before encoding.
 
 ---
 
@@ -409,7 +663,8 @@ pyautogui.mouseUp()
 
 - **REST calls** go through the Axios `apiClient` (local) or `cloudApiClient` (cloud) instances in `src/api/client.ts`
 - **SSE streams** use a custom `streamLocalFetch()` helper (native fetch, not Axios) because Axios does not support streaming
-- The local backend base URL is resolved dynamically via `getBaseUrl()` from `src/api/config.ts` (supports Electron IPC or HTTP)
+- `executeTestsStream` accepts an optional `AbortSignal` (from `AbortController`) to cancel the fetch mid-stream
+- The local backend base URL is resolved dynamically via `getBaseUrl()` from `src/api/config.ts`
 - All cloud API calls pass the JWT token from `useAuthStore` in the request body (not headers), since the local backend proxies them
 
 ---
@@ -424,10 +679,46 @@ All React Query hooks live in `src/hooks/useProjectsQueries.ts`:
 | `useProject(id)` | Single project |
 | `useProjectFeatures(projectId)` | List features for a project |
 | `useFeatureTestCases(featureId)` | List test cases for a feature |
+| `useFeatureTestRuns(featureId)` | List past test runs for a feature (sorted newest first) |
+| `useTestRunDetail(runId)` | Full detail of a single run — includes `results[]` with steps |
 | `useBuildFeatureContext()` | Mutation: build/rebuild context (SSE) |
 | `useGenerateFeatureTests()` | Mutation: generate tests (SSE) |
 | `useCreateProject()` | Mutation: create project with AI context (SSE) |
 | `useUpdateProjectContext()` | Mutation: update project context (SSE) |
+
+---
+
+## testSuiteExecutionStore — Key State Shape
+
+```typescript
+{
+  status: 'idle' | 'running' | 'complete' | 'error' | 'aborted';
+  tests: TestRun[];          // one entry per test case
+  currentTestId: string | null;
+  activityLog: ActivityEntry[];  // ALL actions across ALL tests; each entry has testId
+                                 // accumulates across tests — never reset per-test
+  thinking: string;
+  suiteResult: { passed, failed, skipped, total } | null;
+  error: string | null;
+
+  // Guided execution
+  guidanceNeeded: { testId, question, currentState, confidence? } | null;
+  isPaused: boolean;
+  isPausePending: boolean;   // true from button press until backend confirms pause
+  isAbortPending: boolean;   // true from button press until backend confirms abort
+}
+```
+
+**Key actions:**
+- `setInitialTests(testCases)` — seeds `tests[]` with status `"pending"` (live mode)
+- `startExecution(params)` — opens SSE stream, handles all events
+- `loadPastRun(testCases, runDetail)` — **replay mode**: populates `tests[]` and `activityLog` from API data, resets all live-execution state
+- `reset()` — clears everything back to idle
+
+**Execute page (`execute.tsx`) local state:**
+- `selectedTestId` — `null` = follow live current test; `string` = user pinned a specific test to review
+- `displayedLog` = `activityLog.filter(e => e.testId === displayedTestId)` — each test's log is isolated
+- Store is `reset()` on mount/unmount in live mode; `loadPastRun()` handles init in replay mode
 
 ---
 
@@ -437,4 +728,4 @@ The local backend requires macOS permissions:
 - **Screen Recording** — to capture window screenshots via `mss`
 - **Accessibility** — to control mouse/keyboard via `pyautogui`
 
-The backend checks for these on startup and emits warnings if missing.
+Check via `GET /permissions`. The backend emits warnings on startup if either is missing. Grant in **System Settings → Privacy & Security**.
