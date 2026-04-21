@@ -18,6 +18,8 @@ import {
   generateFeatureTests,
   saveFeatureTests,
   updateProjectContext,
+  listTestRunsByFeature,
+  getTestRunDetail,
   type CloudContextUpdateCallbacks,
   type Project,
   type Feature,
@@ -28,6 +30,8 @@ import {
   type CloudProjectCallbacks,
   type CloudContextCallbacks,
   type CloudTestsCallbacks,
+  type CloudTestRun,
+  type CloudTestRunDetail,
 } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
 
@@ -304,6 +308,47 @@ export function useSaveFeatureTests(featureId: string | null, projectId: string 
       if (projectId) queryClient.invalidateQueries({ queryKey: featuresQueryKey(projectId) });
     },
   });
+}
+
+export function testRunsQueryKey(featureId: string) {
+  return ['features', featureId, 'test-runs'] as const;
+}
+
+export function useFeatureTestRuns(featureId: string | undefined) {
+  const token = useAuthStore((s) => s.token);
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: testRunsQueryKey(featureId ?? ''),
+    queryFn: () => listTestRunsByFeature(featureId!),
+    enabled: !!token && !!featureId,
+  });
+
+  return {
+    runs: (data ?? []) as CloudTestRun[],
+    loading: isLoading,
+    error: error?.message ?? null,
+    refetch,
+  };
+}
+
+export function testRunDetailQueryKey(runId: string) {
+  return ['test-runs', runId, 'detail'] as const;
+}
+
+export function useTestRunDetail(runId: string | undefined) {
+  const token = useAuthStore((s) => s.token);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: testRunDetailQueryKey(runId ?? ''),
+    queryFn: () => getTestRunDetail(runId!),
+    enabled: !!token && !!runId,
+  });
+
+  return {
+    runDetail: (data ?? null) as CloudTestRunDetail | null,
+    loading: isLoading,
+    error: error?.message ?? null,
+  };
 }
 
 export function useUpdateProjectContext(projectId: string) {

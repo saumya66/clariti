@@ -23,9 +23,10 @@ import {
   ArrowLeft,
   RotateCcw,
   Ban,
+  ListChecks,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
-import { useFeatureTestCases } from '@/hooks/useProjectsQueries';
+import { useFeatureTestCases, useTestRunDetail } from '@/hooks/useProjectsQueries';
 import { useTestSuiteExecutionStore, type TestRunStatus, type ActivityEntry } from '@/store/testSuiteExecutionStore';
 import { cn } from '@/lib/utils';
 import { z } from 'zod';
@@ -36,6 +37,7 @@ export const Route = createFileRoute('/app/execute')({
     projectId: z.string().optional(),
     windowTitle: z.string().optional(),
     featureName: z.string().optional(),
+    runId: z.string().optional(),
   }),
   component: ExecutePage,
 });
@@ -170,15 +172,66 @@ function GuidancePanel({
   );
 }
 
+// ─── Conclusion block ────────────────────────────────────────────────────────
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function ConclusionBlock({ conclusion, status }: { conclusion: string; status: string }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const cleaned = stripMarkdown(conclusion);
+  const lines = cleaned.split('\n').filter(Boolean);
+  const preview = lines.slice(0, 3).join('\n');
+  const hasMore = lines.length > 3;
+
+  const isPassed = status === 'passed';
+
+  return (
+    <div className={cn(
+      'rounded-xl border px-4 py-3',
+      isPassed ? 'bg-white border-emerald-500/40' : 'bg-white border-red-500/40'
+    )}>
+      <p className={cn(
+        'text-[10px] font-semibold uppercase tracking-wider mb-1',
+        isPassed ? 'text-emerald-600/70' : 'text-red-500/70'
+      )}>
+        Result
+      </p>
+      <p className="text-xs leading-relaxed whitespace-pre-line text-foreground">
+        {expanded ? cleaned : preview}
+      </p>
+      {hasMore && (
+        <button
+          onClick={() => setExpanded((p) => !p)}
+          className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {expanded ? <><ChevronUp className="size-3" /> Show less</> : <><ChevronDown className="size-3" /> Show full result</>}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Execute Page ─────────────────────────────────────────────────────────────
 
 function ExecutePage() {
-  const { featureId, projectId, windowTitle, featureName } = Route.useSearch();
+  const { featureId, projectId, windowTitle, featureName, runId } = Route.useSearch();
   const { token, user } = useAuthStore();
   const router = useRouter();
+  const isReplayMode = !!runId;
   const { testCases } = useFeatureTestCases(featureId ?? '');
+  const { runDetail } = useTestRunDetail(isReplayMode ? runId : undefined);
   const activityEndRef = React.useRef<HTMLDivElement>(null);
   const [thinkingExpanded, setThinkingExpanded] = React.useState(true);
+  // null = follow live (currentTestId); string = user has pinned a specific test to view
+  const [selectedTestId, setSelectedTestId] = React.useState<string | null>(null);
 
   const {
     status,
@@ -190,25 +243,50 @@ function ExecutePage() {
     error,
     guidanceNeeded,
     isPaused,
+    isPausePending,
+    isAbortPending,
     setInitialTests,
     startExecution,
     submitGuidance,
     pauseExecution,
     resumeExecution,
     abortExecution,
+    loadPastRun,
     reset,
   } = useTestSuiteExecutionStore();
 
-  // Pre-populate test list once test cases load
+  // Reset store to idle on every fresh navigation — but not in replay mode (loadPastRun handles init)
   React.useEffect(() => {
-    if (testCases.length > 0 && status === 'idle') {
+    if (!isReplayMode) {
+      reset();
+      return () => reset();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Replay mode: populate store from API once data is ready
+  React.useEffect(() => {
+    if (isReplayMode && testCases.length > 0 && runDetail) {
+      loadPastRun(testCases, runDetail);
+      // Auto-select first test so the right panel is populated
+      if (runDetail.results.length > 0) {
+        setSelectedTestId(runDetail.results[0].test_case_id);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReplayMode, testCases.length, runDetail]);
+
+  // Live mode: Pre-populate test list once test cases load (after reset, status is 'idle')
+  React.useEffect(() => {
+    if (!isReplayMode && testCases.length > 0 && status === 'idle') {
       setInitialTests(testCases);
     }
-  }, [testCases, status, setInitialTests]);
+  }, [isReplayMode, testCases, status, setInitialTests]);
 
-  // Auto-start when params + tests are ready — never re-trigger after abort/error/complete
+  // Live mode: Auto-start when params + tests are ready — never re-trigger after abort/error/complete
   React.useEffect(() => {
     if (
+      !isReplayMode &&
       featureId &&
       windowTitle &&
       token &&
@@ -225,12 +303,14 @@ function ExecutePage() {
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tests.length, status]);
+  }, [isReplayMode, tests.length, status]);
 
-  // Scroll activity log to bottom on new entries
+  // Scroll activity log to bottom on new entries (only when viewing live)
   React.useEffect(() => {
-    activityEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activityLog.length]);
+    if (!selectedTestId) {
+      activityEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activityLog.length, selectedTestId]);
 
   const currentTest = tests.find((t) => t.id === currentTestId);
   const completedCount = tests.filter((t) => ['passed', 'failed', 'skipped'].includes(t.status)).length;
@@ -239,23 +319,49 @@ function ExecutePage() {
   const isRunning = status === 'running';
   const isDone = status === 'complete' || status === 'error' || status === 'aborted';
 
+  // When run completes, auto-select the last test so right panel stays populated
+  React.useEffect(() => {
+    if (isDone && tests.length > 0 && !selectedTestId) {
+      const lastRan = [...tests].reverse().find((t) => t.status !== 'pending');
+      if (lastRan) setSelectedTestId(lastRan.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDone, tests.length]);
+
+  // Which test's details + log to show in the right panel:
+  // - While running with no selection: follow the live current test
+  // - If user clicked a test row: show that test (historical browse mode)
+  // - When done: default to the last test that ran (or whatever was selected)
+  const displayedTestId = selectedTestId ?? currentTestId;
+  const displayedTest = tests.find((t) => t.id === displayedTestId) ?? currentTest;
+
+  // Log filtered to only the displayed test's entries
+  const displayedLog = displayedTestId
+    ? activityLog.filter((e) => e.testId === displayedTestId)
+    : activityLog;
+
+  // True when user is browsing a past test while a different test is actively running
+  const isViewingHistory = isRunning && selectedTestId !== null && selectedTestId !== currentTestId;
+
   // Whether to show the guidance panel
   const showGuidance = isRunning && (!!guidanceNeeded || isPaused);
 
   const handleRunAgain = () => {
+    setSelectedTestId(null);
     reset();
-    // Re-set tests from loaded testCases then let the auto-start effect fire
     if (testCases.length > 0) setInitialTests(testCases);
   };
 
-  const backTo = projectId && featureId
+  const backTo = isReplayMode && projectId && featureId
+    ? `/app/projects/${projectId}/tests/${featureId}/runs`
+    : projectId && featureId
     ? `/app/projects/${projectId}/tests/${featureId}`
     : projectId
     ? `/app/projects/${projectId}`
     : '/app';
 
   // ── No params state ───────────────────────────────────────────────────────
-  if (!featureId || !windowTitle) {
+  if (!featureId || (!windowTitle && !isReplayMode)) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
         <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-4">
@@ -276,7 +382,13 @@ function ExecutePage() {
   }
 
   // ── Status label helpers ──────────────────────────────────────────────────
-  const statusDot = isPaused
+  const statusDot = isReplayMode
+    ? 'bg-primary/60'
+    : isAbortPending
+    ? 'bg-destructive animate-pulse'
+    : isPausePending
+    ? 'bg-orange-400 animate-pulse'
+    : isPaused
     ? 'bg-orange-400'
     : isRunning
     ? 'bg-emerald-500 animate-pulse'
@@ -286,7 +398,13 @@ function ExecutePage() {
     ? 'bg-muted-foreground'
     : 'bg-red-500';
 
-  const statusLabel = isPaused
+  const statusLabel = isReplayMode
+    ? 'Replay'
+    : isAbortPending
+    ? 'Aborting…'
+    : isPausePending
+    ? 'Pausing after this step…'
+    : isPaused
     ? 'Paused'
     : isRunning
     ? guidanceNeeded
@@ -326,8 +444,10 @@ function ExecutePage() {
           <h2 className="text-base font-bold text-foreground leading-tight line-clamp-2">
             {featureName || 'Test Suite'}
           </h2>
-          {windowTitle && (
-            <p className="text-xs text-muted-foreground mt-0.5 truncate">{windowTitle}</p>
+          {(windowTitle || isReplayMode) && (
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+              {isReplayMode ? `Run ID: ${runId?.slice(-8)}` : windowTitle}
+            </p>
           )}
 
           {/* Progress */}
@@ -386,58 +506,106 @@ function ExecutePage() {
 
         {/* Test rows */}
         <div className="flex-1 overflow-y-auto py-2">
-          {tests.map((test) => (
-            <div
-              key={test.id}
-              className={cn(
-                'flex items-center gap-3 px-5 py-2.5 transition-colors border-l-2',
-                test.status === 'running'  ? 'bg-primary/5 border-l-primary' :
-                test.status === 'failed'   ? 'border-l-red-500/60' :
-                test.status === 'passed'   ? 'border-l-emerald-500/40' :
-                'border-l-transparent'
-              )}
-            >
-              <span className="font-mono text-[10px] font-semibold text-muted-foreground w-12 shrink-0">
-                {test.test_key}
-              </span>
-              <span className={cn(
-                'flex-1 text-xs truncate',
-                test.status === 'running' ? 'text-primary font-semibold' :
-                test.status === 'passed'  ? 'text-foreground' :
-                test.status === 'failed'  ? 'text-red-500 font-medium' :
-                'text-muted-foreground'
-              )}>
-                {test.title}
-              </span>
-              <StatusIcon status={test.status} />
-            </div>
-          ))}
+          {tests.map((test) => {
+            const isSelected = displayedTestId === test.id;
+            const isClickable = test.status !== 'pending';
+            return (
+              <button
+                key={test.id}
+                disabled={!isClickable}
+                onClick={() => {
+                  if (!isClickable) return;
+                  // Toggle: clicking the already-selected test while running snaps back to live
+                  if (isSelected && isRunning) {
+                    setSelectedTestId(null);
+                  } else {
+                    setSelectedTestId(test.id);
+                  }
+                }}
+                className={cn(
+                  'w-full flex items-center gap-3 px-5 py-2.5 transition-colors border-l-2 text-left',
+                  isSelected
+                    ? 'bg-primary/10 border-l-primary'
+                    : test.status === 'running'
+                    ? 'bg-primary/5 border-l-primary'
+                    : test.status === 'failed'
+                    ? 'border-l-red-500/60 hover:bg-muted/40'
+                    : test.status === 'passed'
+                    ? 'border-l-emerald-500/40 hover:bg-muted/40'
+                    : 'border-l-transparent cursor-default',
+                  isClickable && !isSelected && 'cursor-pointer'
+                )}
+              >
+                <span className="font-mono text-[10px] font-semibold text-muted-foreground w-12 shrink-0">
+                  {test.test_key}
+                </span>
+                <span className={cn(
+                  'flex-1 text-xs truncate',
+                  isSelected        ? 'text-primary font-semibold' :
+                  test.status === 'running' ? 'text-primary font-semibold' :
+                  test.status === 'passed'  ? 'text-foreground' :
+                  test.status === 'failed'  ? 'text-red-500 font-medium' :
+                  'text-muted-foreground'
+                )}>
+                  {test.title}
+                </span>
+                <StatusIcon status={test.status} />
+              </button>
+            );
+          })}
         </div>
 
         {/* Actions footer */}
         <div className="p-4 border-t border-border space-y-2">
-          {/* Running controls */}
-          {isRunning && !isPaused && !guidanceNeeded && (
-            <button
-              onClick={() => pauseExecution()}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-orange-400/40 text-orange-500 hover:bg-orange-500/10 px-4 py-2 text-sm font-semibold transition-colors"
+          {/* Replay mode — read-only, just a back link */}
+          {isReplayMode && (
+            <Link
+              to={backTo}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 px-4 py-2 text-sm font-medium transition-colors"
             >
-              <PauseCircle className="size-4" />
-              Pause &amp; Guide
-            </button>
-          )}
-          {isRunning && (
-            <button
-              onClick={() => abortExecution()}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-destructive/40 text-destructive hover:bg-destructive/10 px-4 py-2 text-sm font-semibold transition-colors"
-            >
-              <StopCircle className="size-4" />
-              Abort Run
-            </button>
+              <ArrowLeft className="size-3.5" />
+              Back to Test Suite
+            </Link>
           )}
 
-          {/* Post-run controls */}
-          {isDone && (
+          {/* Running controls */}
+          {!isReplayMode && isRunning && !isPaused && !guidanceNeeded && (
+            isPausePending ? (
+              /* Pending state — shown immediately on button press */
+              <div className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-500">
+                <Loader2 className="size-4 animate-spin" />
+                Pausing after this step…
+              </div>
+            ) : (
+              <button
+                onClick={() => pauseExecution()}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-orange-400/40 text-orange-500 hover:bg-orange-500/10 px-4 py-2 text-sm font-semibold transition-colors"
+              >
+                <PauseCircle className="size-4" />
+                Pause &amp; Guide
+              </button>
+            )
+          )}
+          {!isReplayMode && isRunning && (
+            isAbortPending ? (
+              /* Pending state — shown immediately on button press */
+              <div className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm font-semibold text-destructive">
+                <Loader2 className="size-4 animate-spin" />
+                Aborting after this step…
+              </div>
+            ) : (
+              <button
+                onClick={() => abortExecution()}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-destructive/40 text-destructive hover:bg-destructive/10 px-4 py-2 text-sm font-semibold transition-colors"
+              >
+                <StopCircle className="size-4" />
+                Abort Run
+              </button>
+            )
+          )}
+
+          {/* Post-run controls (live mode only) */}
+          {!isReplayMode && isDone && (
             <>
               <button
                 onClick={handleRunAgain}
@@ -461,221 +629,293 @@ function ExecutePage() {
       {/* ── Right panel: current test + live log ── */}
       <main className="flex-1 flex flex-col overflow-hidden bg-background">
 
-        {/* Current test header */}
-        {currentTest ? (
-          <div className="px-8 pt-7 pb-6 border-b border-border">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Test {currentTest.test_number ?? '—'} of {totalCount}
-            </p>
-            <h1 className="text-2xl font-black text-foreground leading-tight mb-2">
-              {currentTest.test_key}: {currentTest.title}
-            </h1>
-            <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl mb-4">
-              {currentTest.goal}
-            </p>
-            {currentTest.expected_result && (
-              <div className="inline-flex items-start gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-2.5 max-w-2xl">
-                <CheckCircle2 className="size-4 text-emerald-600 shrink-0 mt-0.5" />
-                <p className="text-sm text-emerald-700">
-                  <span className="font-semibold">Expected: </span>{currentTest.expected_result}
-                </p>
-              </div>
-            )}
-          </div>
-        ) : status === 'complete' && suiteResult ? (
-          <div className="px-8 pt-7 pb-6 border-b border-border">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Execution Complete
-            </p>
-            <h1 className="text-2xl font-black text-foreground mb-2">
-              {suiteResult.failed === 0
-                ? '🎉 All Tests Passed'
-                : `${suiteResult.failed} Test${suiteResult.failed !== 1 ? 's' : ''} Failed`}
-            </h1>
-            <div className="flex gap-3 mt-3">
-              <span className="text-sm font-medium text-emerald-600 bg-emerald-500/10 rounded-full px-3 py-1">
-                {suiteResult.passed} passed
-              </span>
-              {suiteResult.failed > 0 && (
-                <span className="text-sm font-medium text-red-500 bg-red-500/10 rounded-full px-3 py-1">
-                  {suiteResult.failed} failed
-                </span>
-              )}
+        {/* "Back to live" banner when user is browsing history during an active run */}
+        {isViewingHistory && (
+          <div className="flex items-center justify-between px-8 py-2.5 bg-primary/5 border-b border-primary/20">
+            <div className="flex items-center gap-2 text-xs text-primary font-medium">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+              A test is running — you're viewing history
             </div>
-          </div>
-        ) : status === 'aborted' ? (
-          <div className="px-8 pt-7 pb-6 border-b border-border">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Run Aborted
-            </p>
-            <h1 className="text-2xl font-black text-foreground mb-2">Execution stopped</h1>
-            <p className="text-sm text-muted-foreground">
-              {completedCount > 0
-                ? `Completed ${completedCount} of ${totalCount} tests before stopping.`
-                : 'No tests were completed.'}
-            </p>
-          </div>
-        ) : status === 'error' ? (
-          <div className="px-8 pt-7 pb-6 border-b border-border">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Execution Error
-            </p>
-            <h1 className="text-2xl font-black text-foreground mb-2">Something went wrong</h1>
-            <p className="text-sm text-muted-foreground leading-relaxed max-w-lg">{error}</p>
-          </div>
-        ) : (
-          <div className="px-8 pt-7 pb-6 border-b border-border">
-            <div className="flex items-center gap-2">
-              <Loader2 className="size-4 text-primary animate-spin" />
-              <p className="text-sm text-muted-foreground">Initializing execution…</p>
-            </div>
-          </div>
-        )}
-
-        {/* Live activity log */}
-        <div className="flex-1 flex flex-col overflow-hidden px-8 py-5">
-          <div className="rounded-2xl border border-border bg-card flex flex-col flex-1 overflow-hidden">
-            {/* Log header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Activity Log
-              </span>
-              {isRunning && !isPaused && !guidanceNeeded && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
-                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
-                  Live
-                </span>
-              )}
-              {(isPaused || !!guidanceNeeded) && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-orange-500">
-                  <PauseCircle className="size-3" />
-                  Waiting for you
-                </span>
-              )}
-              {isDone && activityLog.length > 0 && (
-                <span className="text-[11px] text-muted-foreground">
-                  {activityLog.length} action{activityLog.length !== 1 ? 's' : ''}
-                </span>
-              )}
-            </div>
-
-            {/* Log entries */}
-            <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2.5">
-              {activityLog.length === 0 && isRunning && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
-                  <Loader2 className="size-3 animate-spin" />
-                  Waiting for first action…
-                </div>
-              )}
-              {activityLog.length === 0 && isDone && (
-                <p className="text-xs text-muted-foreground py-2">No actions recorded.</p>
-              )}
-              {activityLog.map((entry) => (
-                <div key={entry.id} className="flex items-start gap-3">
-                  <span className="font-mono text-[10px] text-muted-foreground shrink-0 mt-0.5 w-16 tabular-nums">
-                    {entry.time}
-                  </span>
-                  <ActivityIcon type={entry.type} success={entry.success} />
-                  <div className="flex-1 flex items-start gap-2 min-w-0">
-                    <p className={cn(
-                      'text-xs leading-relaxed flex-1',
-                      entry.success ? 'text-foreground' : 'text-muted-foreground'
-                    )}>
-                      {entry.description}
-                    </p>
-                    {entry.confidence === 'low' && entry.type !== 'guidance' && (
-                      <span className="shrink-0 inline-flex items-center rounded-full bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-600 border border-yellow-400/30">
-                        low confidence
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div ref={activityEndRef} />
-            </div>
-          </div>
-        </div>
-
-        {/* Guidance panel — shown when stuck or manually paused */}
-        {showGuidance && (
-          <GuidancePanel
-            question={guidanceNeeded?.question}
-            currentState={guidanceNeeded?.currentState}
-            isPaused={isPaused}
-            onSubmit={(guidance) => {
-              if (isPaused) {
-                resumeExecution(guidance);
-              } else {
-                submitGuidance(guidance);
-              }
-            }}
-          />
-        )}
-
-        {/* Skip guidance / resume — available for both manual pause and agent need_help */}
-        {isRunning && (isPaused || !!guidanceNeeded) && (
-          <div className="px-8 pb-5 flex items-center justify-end gap-3">
-            <span className="text-xs text-muted-foreground">Don't need to guide?</span>
             <button
-              onClick={() => {
-                if (isPaused) {
-                  resumeExecution();
-                } else {
-                  // Dismiss agent guidance and let it continue on its own
-                  submitGuidance('Continue on your own best judgement.');
-                }
-              }}
-              className="inline-flex items-center gap-2 rounded-full border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 px-4 py-1.5 text-sm font-medium transition-colors"
+              onClick={() => setSelectedTestId(null)}
+              className="inline-flex items-center gap-1.5 text-xs text-primary font-semibold hover:underline"
             >
-              <PlayCircle className="size-4" />
-              Skip &amp; Resume
+              <PlayCircle className="size-3.5" />
+              Back to live
             </button>
           </div>
         )}
 
-        {/* AI Reasoning (thinking) */}
-        {(thinking || (isRunning && activityLog.length > 0)) && (
-          <div className="px-8 pb-5">
-            <div className="rounded-2xl border border-border bg-card overflow-hidden">
-              <button
-                onClick={() => setThinkingExpanded((p) => !p)}
-                className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-muted/20 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="flex size-5 items-center justify-center rounded-full bg-primary/10">
-                    <Zap className="size-3 text-primary" />
-                  </div>
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {thinking ? 'Thinking…' : 'AI Reasoning'}
+        {/* Scrollable content area */}
+        <div className="flex-1 overflow-y-auto flex flex-col">
+
+          {/* Test header */}
+          {displayedTest ? (
+            <div className="px-8 pt-6 pb-5 border-b border-border">
+              {/* Key + test number + status badge in one row */}
+              <div className="flex items-center gap-2 mb-2.5 flex-wrap">
+                <span className="font-mono text-xs font-bold text-muted-foreground bg-muted px-2 py-0.5 rounded-md">
+                  {displayedTest.test_key}
+                </span>
+                <span className="text-xs text-muted-foreground/60">
+                  Test {displayedTest.test_number ?? '—'} of {totalCount}
+                </span>
+                {displayedTest.status === 'passed' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 border border-emerald-500/20">
+                    <CheckCircle2 className="size-3" /> Passed
                   </span>
-                  {thinking && (
-                    <span className="flex gap-0.5">
-                      {[0, 1, 2].map((i) => (
-                        <span
-                          key={i}
-                          className="size-1 rounded-full bg-primary animate-bounce"
-                          style={{ animationDelay: `${i * 0.15}s` }}
-                        />
-                      ))}
+                )}
+                {displayedTest.status === 'failed' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-500 border border-red-500/20">
+                    <XCircle className="size-3" /> Failed
+                  </span>
+                )}
+                {displayedTest.status === 'skipped' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground border border-border">
+                    <Minus className="size-3" /> Skipped
+                  </span>
+                )}
+                {displayedTest.status === 'running' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary border border-primary/20">
+                    <Loader2 className="size-3 animate-spin" /> Running
+                  </span>
+                )}
+              </div>
+
+              {/* Title */}
+              <h1 className="text-lg font-bold text-foreground leading-snug mb-1.5">
+                {displayedTest.title}
+              </h1>
+              {displayedTest.goal && (
+                <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl mb-4">
+                  {displayedTest.goal}
+                </p>
+              )}
+
+              {/* Expected + Result — compact row cards */}
+              <div className="space-y-2 max-w-2xl">
+                {displayedTest.expected_result && (
+                  <div className="flex items-start gap-3 rounded-xl bg-white border border-emerald-500/40 px-4 py-3">
+                    <CheckCircle2 className="size-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600/70 mb-0.5">Expected</p>
+                      <p className="text-xs text-foreground leading-relaxed">{displayedTest.expected_result}</p>
+                    </div>
+                  </div>
+                )}
+                {displayedTest.conclusion && (
+                  <ConclusionBlock
+                    conclusion={displayedTest.conclusion}
+                    status={displayedTest.status}
+                  />
+                )}
+              </div>
+            </div>
+          ) : status === 'complete' && suiteResult ? (
+            <div className="px-8 pt-6 pb-5 border-b border-border">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                Execution Complete
+              </p>
+              <h1 className="text-xl font-bold text-foreground mb-3">
+                {suiteResult.failed === 0 ? 'All Tests Passed' : `${suiteResult.failed} Test${suiteResult.failed !== 1 ? 's' : ''} Failed`}
+              </h1>
+              <div className="flex gap-2">
+                <span className="text-xs font-medium text-emerald-600 bg-emerald-500/10 rounded-full px-3 py-1">
+                  {suiteResult.passed} passed
+                </span>
+                {suiteResult.failed > 0 && (
+                  <span className="text-xs font-medium text-red-500 bg-red-500/10 rounded-full px-3 py-1">
+                    {suiteResult.failed} failed
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : status === 'aborted' ? (
+            <div className="px-8 pt-6 pb-5 border-b border-border">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Run Aborted</p>
+              <h1 className="text-xl font-bold text-foreground mb-1">Execution stopped</h1>
+              <p className="text-sm text-muted-foreground">
+                {completedCount > 0
+                  ? `Completed ${completedCount} of ${totalCount} tests before stopping.`
+                  : 'No tests were completed.'}
+              </p>
+            </div>
+          ) : status === 'error' ? (
+            <div className="px-8 pt-6 pb-5 border-b border-border">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Execution Error</p>
+              <h1 className="text-xl font-bold text-foreground mb-1">Something went wrong</h1>
+              <p className="text-sm text-muted-foreground leading-relaxed max-w-lg">{error}</p>
+            </div>
+          ) : (
+            <div className="px-8 pt-6 pb-5 border-b border-border">
+              <div className="flex items-center gap-2">
+                <Loader2 className="size-4 text-primary animate-spin" />
+                <p className="text-sm text-muted-foreground">Initializing execution…</p>
+              </div>
+            </div>
+          )}
+
+          {/* Activity log */}
+          <div className="px-8 py-5 flex-1 flex flex-col min-h-0">
+            <div className="rounded-2xl border border-border bg-card flex flex-col overflow-hidden" style={{ minHeight: 260 }}>
+              {/* Log header */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+                <div className="flex items-center gap-2">
+                  <ListChecks className="size-3.5 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Activity Log
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  {isReplayMode && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-primary/70">
+                      <span className="size-1.5 rounded-full bg-primary/60 inline-block" />
+                      Replay
+                    </span>
+                  )}
+                  {!isReplayMode && isRunning && !isViewingHistory && !isPaused && !guidanceNeeded && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
+                      <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                      Live
+                    </span>
+                  )}
+                  {(isPaused || !!guidanceNeeded) && !isViewingHistory && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-orange-500">
+                      <PauseCircle className="size-3" />
+                      Waiting for you
+                    </span>
+                  )}
+                  {displayedLog.length > 0 && (
+                    <span className="text-[11px] text-muted-foreground tabular-nums">
+                      {displayedLog.length} action{displayedLog.length !== 1 ? 's' : ''}
                     </span>
                   )}
                 </div>
-                {thinkingExpanded ? (
-                  <ChevronUp className="size-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="size-4 text-muted-foreground" />
+              </div>
+
+              {/* Log entries */}
+              <div className="overflow-y-auto px-5 py-3">
+                {displayedLog.length === 0 && isRunning && !isViewingHistory && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
+                    <Loader2 className="size-3 animate-spin" />
+                    Waiting for first action…
+                  </div>
                 )}
-              </button>
-              {thinkingExpanded && thinking && (
-                <div className="px-5 pb-4 border-t border-border">
-                  <p className="text-xs text-muted-foreground italic leading-relaxed mt-3">
-                    {thinking}
-                  </p>
+                {displayedLog.length === 0 && (isDone || isViewingHistory || isReplayMode) && (
+                  <p className="text-xs text-muted-foreground py-4">No actions recorded for this test.</p>
+                )}
+                <div className="space-y-0.5">
+                  {displayedLog.map((entry, i) => (
+                    <div key={entry.id} className="flex items-start gap-3 py-2 rounded-lg hover:bg-muted/30 transition-colors group">
+                      {/* Action icon */}
+                      <ActivityIcon type={entry.type} success={entry.success} />
+                      {/* Description */}
+                      <div className="flex-1 min-w-0">
+                        <p className={cn(
+                          'text-xs leading-relaxed',
+                          entry.success ? 'text-foreground' : 'text-muted-foreground'
+                        )}>
+                          {entry.description}
+                        </p>
+                        {entry.confidence === 'low' && entry.type !== 'guidance' && (
+                          <span className="mt-1 inline-flex items-center rounded-full bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-600 border border-yellow-400/30">
+                            low confidence
+                          </span>
+                        )}
+                      </div>
+                      {/* Step number + timestamp on hover */}
+                      <span className="font-mono text-[9px] text-muted-foreground/40 shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity tabular-nums select-none">
+                        step {i + 1}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              )}
+                <div ref={activityEndRef} />
+              </div>
             </div>
           </div>
-        )}
+
+          {/* Guidance panel — shown when stuck or manually paused (live mode only) */}
+          {!isReplayMode && showGuidance && (
+            <GuidancePanel
+              question={guidanceNeeded?.question}
+              currentState={guidanceNeeded?.currentState}
+              isPaused={isPaused}
+              onSubmit={(guidance) => {
+                if (isPaused) {
+                  resumeExecution(guidance);
+                } else {
+                  submitGuidance(guidance);
+                }
+              }}
+            />
+          )}
+
+          {/* Skip guidance / resume */}
+          {!isReplayMode && isRunning && (isPaused || !!guidanceNeeded) && (
+            <div className="px-8 pb-5 flex items-center justify-end gap-3">
+              <span className="text-xs text-muted-foreground">Don't need to guide?</span>
+              <button
+                onClick={() => {
+                  if (isPaused) {
+                    resumeExecution();
+                  } else {
+                    submitGuidance('Continue on your own best judgement.');
+                  }
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 px-4 py-1.5 text-sm font-medium transition-colors"
+              >
+                <PlayCircle className="size-4" />
+                Skip &amp; Resume
+              </button>
+            </div>
+          )}
+
+          {/* AI Reasoning (thinking) — live mode only */}
+          {!isReplayMode && (thinking || (isRunning && activityLog.length > 0)) && (
+            <div className="px-8 pb-5">
+              <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                <button
+                  onClick={() => setThinkingExpanded((p) => !p)}
+                  className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-muted/20 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="flex size-5 items-center justify-center rounded-full bg-primary/10">
+                      <Zap className="size-3 text-primary" />
+                    </div>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {thinking ? 'Thinking…' : 'AI Reasoning'}
+                    </span>
+                    {thinking && (
+                      <span className="flex gap-0.5">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="size-1 rounded-full bg-primary animate-bounce"
+                            style={{ animationDelay: `${i * 0.15}s` }}
+                          />
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                  {thinkingExpanded ? (
+                    <ChevronUp className="size-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="size-4 text-muted-foreground" />
+                  )}
+                </button>
+                {thinkingExpanded && thinking && (
+                  <div className="px-5 pb-4 border-t border-border">
+                    <p className="text-xs text-muted-foreground italic leading-relaxed mt-3">
+                      {thinking}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+        </div>{/* end scrollable content */}
       </main>
     </div>
   );

@@ -691,19 +691,27 @@ export interface TestStartEvent {
   goal: string;
 }
 
-export interface StepEvent {
-  event: 'step';
-  test_id: string;
+// Unified step shape — used for both SSE events (live) and DB records (replay)
+export interface StepRecord {
   step_number: number;
   action: string;
-  target?: string;
-  value?: string;
-  reasoning: string;
-  current_state: string;
+  type: string;
+  description: string;
+  target?: string | null;
+  value?: string | null;
+  reasoning?: string | null;
   success: boolean;
-  coordinates?: [number, number];
-  error?: string;
-  confidence?: 'high' | 'medium' | 'low';
+  coordinates?: [number, number] | null;
+  confidence?: 'high' | 'medium' | 'low' | null;
+  error?: string | null;
+  timestamp?: string | null;
+}
+
+export interface StepEvent extends StepRecord {
+  event: 'step';
+  test_id: string;
+  // legacy fields kept for compatibility
+  current_state?: string;
 }
 
 export interface NeedHelpEvent {
@@ -1315,4 +1323,55 @@ export async function executeCUStream(
   } finally {
     reader.releaseLock();
   }
+}
+
+// =============================================================================
+// Test Runs + Results (for Past Runs feature)
+// =============================================================================
+
+export interface CloudTestRun {
+  id: string;
+  feature_id: string;
+  user_id: string;
+  provider: string;
+  model: string;
+  target_window?: string | null;
+  status: string;
+  total_tests: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  started_at: string;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+export interface CloudTestResult {
+  id: string;
+  run_id: string;
+  test_case_id: string;
+  status: 'passed' | 'failed' | 'running' | 'skipped';
+  conclusion?: string | null;
+  steps: StepRecord[];
+  steps_executed: number;
+  error?: string | null;
+  created_at: string;
+}
+
+export interface CloudTestRunDetail extends CloudTestRun {
+  results: CloudTestResult[];
+}
+
+export async function listTestRunsByFeature(featureId: string): Promise<CloudTestRun[]> {
+  const response = await cloudApiClient.get<CloudTestRun[]>(
+    `/api/v1/test-runs/by-feature/${featureId}`
+  );
+  return response.data;
+}
+
+export async function getTestRunDetail(runId: string): Promise<CloudTestRunDetail> {
+  const response = await cloudApiClient.get<CloudTestRunDetail>(
+    `/api/v1/test-runs/${runId}/detail`
+  );
+  return response.data;
 }

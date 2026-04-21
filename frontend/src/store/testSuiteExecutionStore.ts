@@ -13,6 +13,8 @@ import {
   type PausedEvent,
   type TestCompleteEvent,
   type SuiteCompleteEvent,
+  type StepRecord,
+  type CloudTestRunDetail,
 } from '../api/client';
 
 export type TestRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
@@ -30,7 +32,7 @@ export interface TestRun {
   test_number?: number;
 }
 
-export interface ActivityEntry {
+export interface ActivityEntry extends Partial<StepRecord> {
   id: string;
   time: string;
   testId: string;
@@ -38,7 +40,7 @@ export interface ActivityEntry {
   description: string;
   type: 'click' | 'type' | 'scroll' | 'observe' | 'navigate' | 'wait' | 'guidance' | 'other';
   success: boolean;
-  confidence?: 'high' | 'medium' | 'low';
+  confidence?: 'high' | 'medium' | 'low' | null;
 }
 
 export interface GuidanceNeeded {
@@ -84,6 +86,10 @@ interface TestSuiteExecutionState {
   guidanceNeeded: GuidanceNeeded | null;
   isPaused: boolean;
 
+  // Pending acknowledgement — true from the moment button is pressed until backend confirms
+  isPausePending: boolean;
+  isAbortPending: boolean;
+
   setInitialTests: (tests: CloudTestCase[]) => void;
   startExecution: (params: {
     featureId: string;
@@ -102,6 +108,8 @@ interface TestSuiteExecutionState {
   resumeExecution: (guidance?: string) => Promise<void>;
   /** Abort the entire run immediately */
   abortExecution: () => Promise<void>;
+  /** Load a completed past run for replay — merges testCases metadata with run results */
+  loadPastRun: (testCases: CloudTestCase[], runDetail: CloudTestRunDetail) => void;
 
   reset: () => void;
 }
@@ -122,6 +130,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
   error: null,
   guidanceNeeded: null,
   isPaused: false,
+  isPausePending: false,
+  isAbortPending: false,
 
   setInitialTests: (testCases: CloudTestCase[]) => {
     set({
@@ -179,7 +189,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
                   : t
               ),
               currentTestId: data.test_id,
-              activityLog: [],
+              // NOTE: Do NOT reset activityLog here — logs accumulate across all
+              // tests so the user can browse previous test logs while a new one runs.
               thinking: '',
               guidanceNeeded: null,
               isPaused: false,
@@ -188,18 +199,30 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
 
           onStep: (data: StepEvent) => {
             const description =
+              data.description?.trim() ||
               data.reasoning?.trim() ||
               `${data.action}${data.target ? ` → ${data.target}` : ''}${data.value ? ` at ${data.value}` : ''}`;
 
+            const time = data.timestamp
+              ? formatTime(new Date(data.timestamp))
+              : formatTime(new Date());
+
             const entry: ActivityEntry = {
               id: `${data.test_id}-${data.step_number}-${Date.now()}`,
-              time: formatTime(new Date()),
+              time,
               testId: data.test_id,
+              step_number: data.step_number,
               action: data.action,
+              type: (data.type as ActivityEntry['type']) || getActivityType(data.action),
               description,
-              type: getActivityType(data.action),
+              target: data.target,
+              value: data.value,
+              reasoning: data.reasoning ?? undefined,
               success: data.success,
+              coordinates: data.coordinates,
               confidence: data.confidence,
+              error: data.error,
+              timestamp: data.timestamp ?? undefined,
             };
 
             set((state) => ({
@@ -232,8 +255,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           },
 
           onPaused: (data: PausedEvent) => {
-            set({ isPaused: true, guidanceNeeded: null });
-            // Add a paused marker to the activity log
+            // Backend confirmed pause — clear pending and set paused
+            set({ isPaused: true, isPausePending: false, guidanceNeeded: null });
             const entry: ActivityEntry = {
               id: `${data.test_id}-paused-${Date.now()}`,
               time: formatTime(new Date()),
@@ -288,7 +311,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           },
 
           onAborted: () => {
-            set({ status: 'idle', currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
+            set({ status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
           },
 
           onError: (message) => {
@@ -323,9 +346,12 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
   pauseExecution: async () => {
     const { featureId } = get();
     if (!featureId) return;
+    // Immediately acknowledge — UI updates right away, backend confirms later via onPaused
+    set({ isPausePending: true });
     try {
       await apiPauseExecution(featureId);
     } catch (err) {
+      set({ isPausePending: false });
       console.error('Failed to pause execution:', err);
     }
   },
@@ -343,6 +369,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
 
   abortExecution: async () => {
     const { featureId } = get();
+    // Immediately acknowledge — UI updates right away
+    set({ isAbortPending: true });
     // Cancel the SSE fetch immediately so the frontend stops reading
     _abortController?.abort();
     _abortController = null;
@@ -354,7 +382,81 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
         console.error('Failed to send abort signal to backend:', err);
       }
     }
-    set({ status: 'aborted', currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
+    // Immediately mark the in-progress test as skipped so its loader stops
+    set((state) => ({
+      tests: state.tests.map((t) =>
+        t.status === 'running' ? { ...t, status: 'skipped' as const } : t
+      ),
+    }));
+    // Fallback: if no onAborted SSE event arrives (e.g. stream already closed), settle state
+    set((state) =>
+      state.isAbortPending
+        ? { status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false }
+        : {}
+    );
+  },
+
+  loadPastRun: (testCases: CloudTestCase[], runDetail: CloudTestRunDetail) => {
+    const tcMap = new Map(testCases.map((tc) => [tc.id!, tc]));
+
+    const tests: TestRun[] = runDetail.results.map((result, i) => {
+      const tc = tcMap.get(result.test_case_id);
+      return {
+        id: result.test_case_id,
+        test_key: tc?.test_key ?? `TC-${String(i + 1).padStart(3, '0')}`,
+        title: tc?.title ?? 'Unknown Test',
+        goal: tc?.goal ?? '',
+        expected_result: tc?.expected_result,
+        status: result.status as TestRunStatus,
+        conclusion: result.conclusion ?? undefined,
+        steps_executed: result.steps_executed,
+        test_number: i + 1,
+      };
+    });
+
+    const activityLog: ActivityEntry[] = runDetail.results.flatMap((result) =>
+      (result.steps as StepRecord[]).map((step, j) => ({
+        id: `${result.test_case_id}-${step.step_number}-${j}`,
+        time: step.timestamp
+          ? formatTime(new Date(step.timestamp))
+          : `step ${step.step_number}`,
+        testId: result.test_case_id,
+        step_number: step.step_number,
+        action: step.action,
+        type: (step.type as ActivityEntry['type']) || getActivityType(step.action),
+        description:
+          step.description?.trim() ||
+          step.reasoning?.trim() ||
+          `${step.action}${step.target ? ` → ${step.target}` : ''}`,
+        target: step.target ?? undefined,
+        value: step.value ?? undefined,
+        reasoning: step.reasoning ?? undefined,
+        success: step.success,
+        coordinates: step.coordinates ?? undefined,
+        confidence: step.confidence,
+        error: step.error ?? undefined,
+        timestamp: step.timestamp ?? undefined,
+      }))
+    );
+
+    set({
+      status: 'complete',
+      tests,
+      activityLog,
+      currentTestId: tests.length > 0 ? tests[0].id : null,
+      suiteResult: {
+        passed: runDetail.passed,
+        failed: runDetail.failed,
+        skipped: runDetail.skipped,
+        total: runDetail.total_tests,
+      },
+      thinking: '',
+      error: null,
+      guidanceNeeded: null,
+      isPaused: false,
+      isPausePending: false,
+      isAbortPending: false,
+    });
   },
 
   reset: () =>
@@ -371,5 +473,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       error: null,
       guidanceNeeded: null,
       isPaused: false,
+      isPausePending: false,
+      isAbortPending: false,
     }),
 }));
