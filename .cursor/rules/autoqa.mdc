@@ -729,3 +729,152 @@ The local backend requires macOS permissions:
 - **Accessibility** — to control mouse/keyboard via `pyautogui`
 
 Check via `GET /permissions`. The backend emits warnings on startup if either is missing. Grant in **System Settings → Privacy & Security**.
+
+---
+
+## Electron Distribution Build Plan
+
+The goal is a self-contained `.dmg` that installs `AutoQA.app` — no Python, no Node, no manual setup required from the user.
+
+### Architecture in the Packaged App
+
+```
+AutoQA.app/
+  Contents/
+    MacOS/
+      AutoQA                      ← Electron binary (bundles its own Node runtime)
+    Resources/
+      backend/
+        autoqa-backend            ← PyInstaller-compiled Python binary (sidecar)
+      app/
+        dist/                     ← Vite-built React UI (HTML/JS/CSS)
+        dist-electron/
+          main.js                 ← compiled Electron main process
+          preload.js
+```
+
+The Electron main process spawns `autoqa-backend` as a **child process** on app startup and kills it on quit. The frontend continues to call `localhost:8000` exactly as it does today — no frontend changes required.
+
+### Build Steps (in order)
+
+#### 1. Compile Python backend → standalone binary (PyInstaller)
+
+```bash
+# In backend/
+pip install pyinstaller
+pyinstaller --onefile main.py \
+  --name autoqa-backend \
+  --hidden-import uvicorn.logging \
+  --hidden-import uvicorn.loops \
+  --hidden-import uvicorn.loops.auto \
+  --hidden-import uvicorn.protocols \
+  --hidden-import uvicorn.protocols.http \
+  --hidden-import uvicorn.protocols.http.auto \
+  --hidden-import uvicorn.protocols.websockets \
+  --hidden-import uvicorn.protocols.websockets.auto \
+  --hidden-import uvicorn.lifespan \
+  --hidden-import uvicorn.lifespan.on \
+  --add-data "agents:agents" \
+  --add-data "models:models"
+# Output: backend/dist/autoqa-backend
+```
+
+macOS note: The binary needs Accessibility + Screen Recording entitlements. These must be set via `electron-builder`'s `entitlements.mac.plist`.
+
+#### 2. Wire `extraResources` in `frontend/package.json`
+
+```json
+"build": {
+  "appId": "com.autoqa.desktop",
+  "productName": "AutoQA",
+  "directories": { "output": "release" },
+  "extraResources": [
+    {
+      "from": "../backend/dist/autoqa-backend",
+      "to": "backend/autoqa-backend"
+    }
+  ],
+  "mac": {
+    "target": "dmg",
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "hardenedRuntime": true
+  }
+}
+```
+
+#### 3. Spawn backend sidecar in `electron/main.ts`
+
+```typescript
+import { spawn, ChildProcess } from 'child_process';
+
+let backendProcess: ChildProcess | null = null;
+
+function startBackend() {
+  const backendBin = isDev
+    ? path.join(__dirname, '../../backend/dist/autoqa-backend')
+    : path.join(process.resourcesPath, 'backend/autoqa-backend');
+
+  backendProcess = spawn(backendBin, [], {
+    env: { ...process.env },
+    stdio: 'pipe',
+  });
+
+  backendProcess.stdout?.on('data', (d) => console.log('[backend]', d.toString()));
+  backendProcess.stderr?.on('data', (d) => console.error('[backend]', d.toString()));
+  backendProcess.on('exit', (code) => console.log('[backend] exited', code));
+}
+
+app.whenReady().then(() => {
+  startBackend();
+  // Wait a moment for the server to bind before opening the window
+  setTimeout(createWindow, 1500);
+});
+
+app.on('before-quit', () => {
+  backendProcess?.kill();
+});
+```
+
+#### 4. Create macOS entitlements file
+
+`frontend/build/entitlements.mac.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>
+```
+
+Screen Recording and Accessibility are runtime permissions — the user still grants them in System Settings on first launch (macOS enforces this regardless; they cannot be bundled).
+
+#### 5. Full build command sequence
+
+```bash
+# Step 1 — compile backend (run once or when backend changes)
+cd backend && pyinstaller --onefile main.py --name autoqa-backend ...
+
+# Step 2 — build Electron app
+cd frontend && npm run electron:build
+# → triggers: vite build && electron-builder
+# → outputs: frontend/release/AutoQA-1.0.0.dmg
+```
+
+### Open TODOs for Electron Distribution
+
+- [ ] **PyInstaller spec file** — create `backend/autoqa-backend.spec` with all hidden imports and data dirs hardcoded so the build is reproducible
+- [ ] **Startup readiness check** — instead of a fixed `setTimeout(1500)`, poll `GET http://localhost:8000/health` in `electron/main.ts` before calling `createWindow()` (avoids race condition on slow machines)
+- [ ] **Port conflict handling** — if `8000` is already in use, find a free port and pass it to the backend binary as an env var; update `ipcMain.handle('get-backend-url')` to return the actual port
+- [ ] **Crash recovery** — listen to `backendProcess.on('exit')` and restart it automatically if it crashes unexpectedly (with a max retry count)
+- [ ] **Loading screen** — show a splash/loading UI in the BrowserWindow while the backend is starting up, then navigate to the real app once `/health` responds
+- [ ] **Entitlements plist** — create `frontend/build/entitlements.mac.plist` with required keys (see above)
+- [ ] **Code signing** — obtain an Apple Developer certificate and configure `electron-builder` with `identity` + `notarize` so macOS Gatekeeper doesn't block the app
+- [ ] **Windows support** — test PyInstaller on Windows (`autoqa-backend.exe`), update `extraResources` path, and handle the `.exe` extension in `electron/main.ts`
+- [ ] **CI build pipeline** — add a GitHub Actions workflow that: (1) builds the Python binary on the target OS, (2) runs `npm run electron:build`, (3) uploads the `.dmg`/`.exe` as release artifacts
