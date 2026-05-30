@@ -7,6 +7,10 @@ import { TanStackRouterVite } from '@tanstack/router-vite-plugin';
 import path from 'path';
 
 export default defineConfig({
+  // Relative asset paths are required for Electron's file:// protocol.
+  // With the default '/', /assets/... resolves to the filesystem root and
+  // scripts fail to load silently, leaving the page non-interactive.
+  base: './',
   plugins: [
     tailwindcss(),
     TanStackRouterVite(),

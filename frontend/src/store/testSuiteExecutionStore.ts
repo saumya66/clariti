@@ -16,6 +16,7 @@ import {
   type StepRecord,
   type CloudTestRunDetail,
 } from '../api/client';
+import { useKeyStore } from './keyStore';
 
 export type TestRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 export type SuiteRunStatus = 'idle' | 'running' | 'complete' | 'error' | 'aborted';
@@ -175,6 +176,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           cloud_feature_id: featureId,
           cloud_user_id: userId,
           cloud_token: token,
+          anthropic_api_key: useKeyStore.getState().anthropicKey,
         },
         {
           onSuiteStart: () => {},

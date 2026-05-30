@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Folder, FlaskConical, Play, PanelLeft } from 'lucide-react';
+import { Folder, FlaskConical, Play, PanelLeft, Settings } from 'lucide-react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
   Sidebar,
@@ -105,12 +105,24 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarGroup>
       </SidebarContent>
 
-      {(isAuthenticated || skipped) && (
-        <SidebarFooter>
-          <SidebarMenu>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={pathname === '/app/settings'}
+              tooltip="Settings"
+              asChild
+            >
+              <Link to="/app/settings">
+                <Settings className="size-4" />
+                <span>Settings</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {(isAuthenticated || skipped) && (
             <SidebarMenuItem>
               <SidebarMenuButton
-                tooltip="Back to login"
+                tooltip="Sign out"
                 asChild
               >
                 <Link
@@ -123,9 +135,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarFooter>
-      )}
+          )}
+        </SidebarMenu>
+      </SidebarFooter>
 
       <SidebarRail />
     </Sidebar>

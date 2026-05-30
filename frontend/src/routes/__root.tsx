@@ -2,7 +2,10 @@ import React from 'react';
 import { createRootRoute, Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Play, FlaskConical } from 'lucide-react';
 import { StatusBar } from '../components/StatusBar';
+import { OnboardingModal } from '../components/OnboardingModal';
 import { useBackendStatus } from '../hooks';
+import { useAuthStore } from '../store/authStore';
+import { useOnboardingStore } from '../store/onboardingStore';
 
 function RootLayout() {
   const { isConnected } = useBackendStatus();
@@ -10,7 +13,14 @@ function RootLayout() {
   const isAppRoute = pathname === '/app' || pathname.startsWith('/app/');
   const isLoginRoute = pathname === '/login';
 
+  const token = useAuthStore((s) => s.token);
+  const skipped = useAuthStore((s) => s.skipped);
+  const onboardingComplete = useOnboardingStore((s) => s.complete);
+  const showOnboarding = (!!token || skipped) && !onboardingComplete;
+
   return (
+    <>
+    <OnboardingModal open={showOnboarding} />
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       {/* Full-screen login: no header */}
       {isLoginRoute ? (
@@ -62,6 +72,7 @@ function RootLayout() {
         </>
       )}
     </div>
+    </>
   );
 }
 

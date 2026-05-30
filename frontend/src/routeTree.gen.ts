@@ -15,6 +15,7 @@ import { Route as CreateRouteImport } from './routes/create'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as AppSettingsRouteImport } from './routes/app/settings'
 import { Route as AppExecuteRouteImport } from './routes/app/execute'
 import { Route as AppCreateRouteImport } from './routes/app/create'
 import { Route as AppProjectsProjectIdRouteImport } from './routes/app/projects/$projectId'
@@ -53,6 +54,11 @@ const IndexRoute = IndexRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
 const AppExecuteRoute = AppExecuteRouteImport.update({
@@ -115,6 +121,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/app/create': typeof AppCreateRoute
   '/app/execute': typeof AppExecuteRoute
+  '/app/settings': typeof AppSettingsRoute
   '/app/': typeof AppIndexRoute
   '/app/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
@@ -131,6 +138,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/app/create': typeof AppCreateRoute
   '/app/execute': typeof AppExecuteRoute
+  '/app/settings': typeof AppSettingsRoute
   '/app': typeof AppIndexRoute
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
   '/app/projects/$projectId': typeof AppProjectsProjectIdIndexRoute
@@ -147,6 +155,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/app/create': typeof AppCreateRoute
   '/app/execute': typeof AppExecuteRoute
+  '/app/settings': typeof AppSettingsRoute
   '/app/': typeof AppIndexRoute
   '/app/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
   '/app/projects/$projectId/context': typeof AppProjectsProjectIdContextRoute
@@ -166,6 +175,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/app/create'
     | '/app/execute'
+    | '/app/settings'
     | '/app/'
     | '/app/projects/$projectId'
     | '/app/projects/$projectId/context'
@@ -182,6 +192,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/app/create'
     | '/app/execute'
+    | '/app/settings'
     | '/app'
     | '/app/projects/$projectId/context'
     | '/app/projects/$projectId'
@@ -197,6 +208,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/app/create'
     | '/app/execute'
+    | '/app/settings'
     | '/app/'
     | '/app/projects/$projectId'
     | '/app/projects/$projectId/context'
@@ -257,6 +269,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/app/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/settings': {
+      id: '/app/settings'
+      path: '/settings'
+      fullPath: '/app/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/execute': {
@@ -364,6 +383,7 @@ const AppProjectsProjectIdRouteWithChildren =
 interface AppRouteChildren {
   AppCreateRoute: typeof AppCreateRoute
   AppExecuteRoute: typeof AppExecuteRoute
+  AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRouteWithChildren
 }
@@ -371,6 +391,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppCreateRoute: AppCreateRoute,
   AppExecuteRoute: AppExecuteRoute,
+  AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
   AppProjectsProjectIdRoute: AppProjectsProjectIdRouteWithChildren,
 }

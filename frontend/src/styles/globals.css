@@ -135,6 +135,12 @@ a[href],
 }
 
 /* Drag region for Electron */
+/* Explicitly opt the body out first — prevents hiddenInset titlebar from
+   making the whole window draggable if app-region state ever goes stale. */
+body {
+  -webkit-app-region: no-drag;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }

@@ -4,6 +4,7 @@
 import axios from 'axios';
 import { getBaseUrl, getCloudBaseUrl } from './config';
 import { useAuthStore } from '@/store/authStore';
+import { useKeyStore } from '@/store/keyStore';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -62,6 +63,23 @@ export default apiClient;
 
 // Re-export for streaming (fetch required - Axios doesn't support SSE in browser)
 export { getBaseUrl } from './config';
+
+// ---- Permissions ----
+
+export interface PermissionsStatus {
+  screen_recording: boolean;
+  accessibility: boolean;
+}
+
+export async function getPermissions(): Promise<PermissionsStatus> {
+  // Prefer Electron IPC: reads AutoQA.app TCC status via systemPreferences.
+  // This is accurate immediately after the user grants — no backend restart needed.
+  if (typeof window !== 'undefined' && window.electronAPI?.checkPermissions) {
+    return window.electronAPI.checkPermissions();
+  }
+  const res = await apiClient.get<PermissionsStatus>('/permissions');
+  return res.data;
+}
 
 export interface WindowInfo {
   id: string;
@@ -264,6 +282,7 @@ export async function updateProjectContext(
   callbacks: CloudContextUpdateCallbacks
 ): Promise<void> {
   const token = useAuthStore.getState().token;
+  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = images.length > 0
     ? await Promise.all(images.map(async (f) => ({
         filename: f.name,
@@ -276,6 +295,7 @@ export async function updateProjectContext(
     images: imagePayloads,
     texts,
     token,
+    anthropic_api_key: anthropicKey,
   });
 
   if (!response.ok) {
@@ -673,6 +693,7 @@ export interface ExecuteTestsRequest {
   cloud_feature_id?: string;
   cloud_user_id?: string;
   cloud_token?: string;
+  anthropic_api_key?: string | null;
 }
 
 export interface TestSuiteStartEvent {
@@ -1124,6 +1145,7 @@ export async function createProjectWithContext(
   callbacks: CloudProjectCallbacks
 ): Promise<void> {
   const token = useAuthStore.getState().token;
+  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = await Promise.all(
     images.map(async (f) => ({
       filename: f.name,
@@ -1137,6 +1159,7 @@ export async function createProjectWithContext(
     images: imagePayloads,
     texts,
     token,
+    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1161,6 +1184,7 @@ export async function buildFeatureContext(
   texts?: string[]
 ): Promise<void> {
   const token = useAuthStore.getState().token;
+  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = images && images.length > 0
     ? await Promise.all(images.map(async (f) => ({
         filename: f.name,
@@ -1175,6 +1199,7 @@ export async function buildFeatureContext(
     user_feedback: userFeedback,
     images: imagePayloads,
     texts: texts ?? [],
+    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1198,12 +1223,14 @@ export async function generateFeatureTests(
   userFeedback?: string
 ): Promise<void> {
   const token = useAuthStore.getState().token;
+  const anthropicKey = useKeyStore.getState().anthropicKey;
   const response = await streamLocalFetch(`/cloud/feature/${featureId}/generate-tests`, {
     feature_id: featureId,
     project_id: projectId,
     token,
     provider,
     user_feedback: userFeedback || null,
+    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
