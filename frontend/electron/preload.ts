@@ -13,10 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkPermissions: (): Promise<{ screen_recording: boolean; accessibility: boolean }> =>
     ipcRenderer.invoke('check-permissions'),
 
-  // Calls CGRequestScreenCaptureAccess() via node-mac-permissions in the main process.
-  // This adds AutoQA.app to System Preferences → Screen Recording and shows the
-  // macOS permission dialog. Works on non-notarized apps on macOS 14+, unlike
-  // desktopCapturer.getSources() which no longer triggers TCC in that case.
+  // Opens System Preferences → Screen Recording so the user can grant access.
   requestScreenRecording: (): Promise<boolean> =>
     ipcRenderer.invoke('request-screen-recording'),
 

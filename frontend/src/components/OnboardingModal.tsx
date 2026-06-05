@@ -163,11 +163,8 @@ export function OnboardingModal({ open }: { open: boolean }) {
                         permState.phase === 'granted' ||
                         (permState.phase === 'missing' && permState.perms.screen_recording)
                       }
-                      onOpenSettings={async () => {
-                        // node-mac-permissions calls CGRequestScreenCaptureAccess() which adds
-                        // AutoQA.app to the Screen Recording list and shows the macOS dialog.
-                        // After the dialog macOS may open System Preferences automatically.
-                        await window.electronAPI?.requestScreenRecording?.();
+                      onOpenSettings={() => {
+                        window.electronAPI?.requestScreenRecording?.();
                       }}
                     />
                     <PermissionRow
@@ -177,10 +174,8 @@ export function OnboardingModal({ open }: { open: boolean }) {
                         permState.phase === 'granted' ||
                         (permState.phase === 'missing' && permState.perms.accessibility)
                       }
-                      onOpenSettings={async () => {
-                        // isTrustedAccessibilityClient(true) opens System Preferences → Accessibility
-                        // automatically when the app isn't trusted yet.
-                        await window.electronAPI?.requestAccessibility?.();
+                      onOpenSettings={() => {
+                        window.electronAPI?.requestAccessibility?.();
                       }}
                     />
                   </div>

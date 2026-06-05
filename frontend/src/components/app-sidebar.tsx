@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useAppStore } from '@/store/useAppStore';
 import { useAuthStore } from '@/store/authStore';
+import { useOnboardingStore } from '@/store/onboardingStore';
 
 const menuItems = [
   { title: 'Projects', section: 'projects' as const, icon: Folder, to: '/app', requireAuth: true },
@@ -32,6 +33,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const isAuthenticated = !!useAuthStore((s) => s.token);
   const skipped = useAuthStore((s) => s.skipped);
   const clearAuth = useAuthStore((s) => s.clearAuth);
+  const resetOnboarding = useOnboardingStore((s) => s.reset);
 
   const handleSidebarClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -129,6 +131,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   to="/login"
                   onClick={() => {
                     clearAuth();
+                    resetOnboarding();
                   }}
                 >
                   <span className="text-muted-foreground">Sign out</span>

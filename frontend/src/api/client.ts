@@ -72,12 +72,36 @@ export interface PermissionsStatus {
 }
 
 export async function getPermissions(): Promise<PermissionsStatus> {
-  // Prefer Electron IPC: reads AutoQA.app TCC status via systemPreferences.
-  // This is accurate immediately after the user grants — no backend restart needed.
-  if (typeof window !== 'undefined' && window.electronAPI?.checkPermissions) {
-    return window.electronAPI.checkPermissions();
+  // Both permissions are checked from the BACKEND process (autoqa-backend).
+  // autoqa-backend is the process that actually calls CGWindowListCopyWindowInfo
+  // (Screen Recording) and CGEventPost/clicks (Accessibility), so its TCC status
+  // is the ground truth.  Using Electron IPC would check AutoQA.app's TCC entries
+  // instead, which registers the wrong process in System Preferences.
+  try {
+    const res = await apiClient.get<PermissionsStatus>('/permissions');
+    return {
+      screen_recording: res.data.screen_recording ?? false,
+      accessibility: res.data.accessibility ?? false,
+    };
+  } catch {
+    return { screen_recording: false, accessibility: false };
   }
-  const res = await apiClient.get<PermissionsStatus>('/permissions');
+}
+
+/**
+ * Trigger the native macOS permission dialog for the given permission type
+ * by calling the actual restricted API inside the backend process:
+ *   - screen_recording → CGWindowListCopyWindowInfo  (fires Screen Recording prompt)
+ *   - accessibility    → AXIsProcessTrustedWithOptions(prompt=True) (fires Accessibility prompt)
+ *   - all              → both
+ *
+ * Returns the permission status after the call (may still be false if the
+ * user hasn't granted yet — they'll need to toggle in System Preferences).
+ */
+export async function requestPermission(
+  type: 'screen_recording' | 'accessibility' | 'all',
+): Promise<PermissionsStatus> {
+  const res = await apiClient.post<PermissionsStatus>('/permissions/request', { type });
   return res.data;
 }
 

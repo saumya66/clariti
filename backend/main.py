@@ -56,6 +56,7 @@ from windows import (
     activate_window,
     capture_window,
     check_permissions,
+    request_permissions,
     get_screenshot_dimensions,
     get_window_by_title,
     list_windows,
@@ -106,7 +107,6 @@ async def lifespan(app: FastAPI):
         print(f"⚠ Warning: {e}")
         print("  The /act endpoint will fail until GEMINI_API_KEY is set.")
     
-    # Check permissions on macOS
     perms = check_permissions()
     if not perms.get("screen_recording"):
         print("⚠ Warning: Screen Recording permission not granted")
@@ -445,6 +445,30 @@ async def get_permissions():
         Permission status for screen recording and accessibility.
     """
     perms = check_permissions()
+    return PermissionsResponse(**perms)
+
+
+class PermissionRequestBody(BaseModel):
+    """Request body for POST /permissions/request."""
+    type: str = "all"  # "screen_recording" | "accessibility" | "all"
+
+
+@app.post("/permissions/request", response_model=PermissionsResponse)
+async def request_permission(body: PermissionRequestBody):
+    """
+    Trigger the native macOS permission dialogs by calling the actual
+    restricted APIs (not just preflight checks).
+
+    - screen_recording: calls CGWindowListCopyWindowInfo, which macOS
+      intercepts to show the Screen Recording prompt.
+    - accessibility: calls AXIsProcessTrustedWithOptions(prompt=True),
+      which shows the Accessibility prompt or opens System Preferences.
+    - all: triggers both prompts.
+
+    Call this during onboarding so the user sees the native dialogs
+    immediately instead of waiting for the first real API usage.
+    """
+    perms = request_permissions(body.type)
     return PermissionsResponse(**perms)
 
 
@@ -2556,6 +2580,7 @@ class ExecuteTestsRequest(BaseModel):
     cloud_feature_id: str | None = None
     cloud_user_id: str | None = None
     cloud_token: str | None = None
+    anthropic_api_key: str | None = None
 
 
 @app.post("/feature/{context_id}/execute")
@@ -2801,6 +2826,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         display_width=window.bounds.width,
                         display_height=window.bounds.height,
                         system_prompt=cu_system_prompt,
+                        api_key=request.anthropic_api_key or None,
                     )
                 except ValueError as e:
                     yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': str(e)})}\n\n"
@@ -3315,6 +3341,7 @@ class CreateProjectRequest(BaseModel):
     images: list = []   # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []    # [str]
     token: str
+    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/project/create")
@@ -3333,7 +3360,8 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
             await asyncio.sleep(0)
 
             import base64
-            image_agent = ImageContextRetrieverAgent(provider="claude")
+            _akey = request.anthropic_api_key or None
+            image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
             image_contexts = []
             for img in request.images:
                 raw = base64.b64decode(img["content_b64"])
@@ -3369,7 +3397,7 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
                     result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
-            synth = _SynthAgent(provider="claude")
+            synth = _SynthAgent(provider="claude", api_key=_akey)
             context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving project...'})}\n\n"
@@ -3412,6 +3440,7 @@ class UpdateProjectContextRequest(BaseModel):
     token: str
     images: list = []  # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []   # [str]
+    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/project/{project_id}/update-context")
@@ -3444,7 +3473,8 @@ async def cloud_update_project_context(project_id: str, request: UpdateProjectCo
             await asyncio.sleep(0)
 
             import base64
-            image_agent = ImageContextRetrieverAgent(provider="claude")
+            _akey = request.anthropic_api_key or None
+            image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
             image_contexts = []
             for img in request.images:
                 raw = base64.b64decode(img["content_b64"])
@@ -3480,7 +3510,7 @@ async def cloud_update_project_context(project_id: str, request: UpdateProjectCo
                     result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
-            synth = _SynthAgent(provider="claude")
+            synth = _SynthAgent(provider="claude", api_key=_akey)
             context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving updated context...'})}\n\n"
@@ -3518,6 +3548,7 @@ class BuildFeatureContextRequest(BaseModel):
     user_feedback: Optional[str] = None
     images: list = []  # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []   # [str]
+    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/feature/{feature_id}/build-context")
@@ -3546,6 +3577,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     token=request.token,
                 )
 
+            _akey = request.anthropic_api_key or None
             from agents.base_agent import BaseAgent
             class _SynthAgent(BaseAgent):
                 @property
@@ -3583,7 +3615,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     "Keep all accurate information from the existing summary."
                 )
 
-                synth = _SynthAgent(provider="claude")
+                synth = _SynthAgent(provider="claude", api_key=_akey)
                 context_summary = await asyncio.to_thread(synth.synthesise, refine_prompt)
 
             else:
@@ -3600,7 +3632,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                 await asyncio.sleep(0)
 
                 import base64
-                image_agent = ImageContextRetrieverAgent(provider="claude")
+                image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
                 image_contexts = []
                 all_items = feature_items + project_items
                 for item in all_items:
@@ -3632,7 +3664,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                 for note in text_notes:
                     context_parts.append(f"Note: {note}")
 
-                synth = _SynthAgent(provider="claude")
+                synth = _SynthAgent(provider="claude", api_key=_akey)
                 context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving context...'})}\n\n"
@@ -3680,6 +3712,7 @@ class GenerateFeatureTestsRequest(BaseModel):
     token: str
     provider: str = "claude"
     user_feedback: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/feature/{feature_id}/generate-tests")
@@ -3712,7 +3745,7 @@ async def cloud_generate_feature_tests(feature_id: str, request: GenerateFeature
             await asyncio.sleep(0)
 
             from agents.test_planner_agent import TestPlannerAgent
-            planner = TestPlannerAgent(provider=request.provider)
+            planner = TestPlannerAgent(provider=request.provider, api_key=request.anthropic_api_key or None)
 
             combined_context = {
                 "name": (feature or {}).get("name", ""),
@@ -3777,9 +3810,10 @@ if __name__ == "__main__":
     """)
     
     try:
-        # Run with uvicorn
+        # Pass the app object directly — string import ("main:app") breaks
+        # inside a PyInstaller frozen binary since there's no importable module.
         config = uvicorn.Config(
-            "main:app",
+            app,
             host=host,
             port=port,
             reload=False,

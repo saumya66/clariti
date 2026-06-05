@@ -54,9 +54,10 @@ Three independent services communicate to deliver the full product:
 ```
 /                          → routes/index.tsx       (redirect to /app or /login)
 /login                     → routes/login.tsx        (auth page)
-/app                       → routes/app.tsx          (layout: sidebar + SidebarInset)
+/app                       → routes/app.tsx          (layout: sidebar + SidebarInset + OnboardingModal)
   /app/                    → routes/app/index.tsx    (projects list)
   /app/create              → routes/app/create.tsx   (free-form create, legacy)
+  /app/settings            → routes/app/settings.tsx (API key management — update/remove key post-onboarding)
   /app/execute             → routes/app/execute.tsx  (test suite execution + replay page)
   /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard — Outlet only)
     /app/projects/$projectId/          → $projectId/index.tsx    (project overview bento)
@@ -67,6 +68,8 @@ Three independent services communicate to deliver the full product:
       /app/projects/$projectId/tests/$featureId/runs/  → $featureId/runs/index.tsx  (past runs list)
 /execute                   → routes/execute.tsx      (redirects to /app/execute if logged in)
 ```
+
+**`/app/settings`** — lets users update or remove their Anthropic API key after the onboarding modal. Uses the same `save-anthropic-key` / `delete-anthropic-key` IPC calls. Accessible from the sidebar.
 
 **Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper. Both `$projectId.tsx` and `$featureId.tsx` are pure layout guards that only render `<Outlet />`.
 
@@ -106,6 +109,17 @@ src/
 - **Zustand** — client/ephemeral state: auth token, execution progress, UI state
 - **TanStack React Query** — server state: projects, features, test cases (fetched + cached)
 - **SSE** — streaming AI progress events (context build, test generation, execution) via native `fetch`
+
+**Zustand stores summary:**
+
+| Store | File | Persisted | Purpose |
+|-------|------|-----------|---------|
+| `useAuthStore` | `authStore.ts` | ✅ localStorage | JWT token, user, `skipped` flag. `clearAuth()` resets all. |
+| `useOnboardingStore` | `onboardingStore.ts` | ✅ localStorage | `complete` flag + `reset()`. Reset on sign-out. |
+| `useKeyStore` | `keyStore.ts` | ❌ memory only | Anthropic key in-memory for session. Hydrated from OS keychain via IPC on load. |
+| `useAppStore` | `useAppStore.ts` | ❌ | Active sidebar section |
+| `testSuiteExecutionStore` | `testSuiteExecutionStore.ts` | ❌ | Live test run state — tests, activity log, pause/abort/guidance state |
+| `executionStore` | `executionStore.ts` | ❌ | Legacy free-form CU execution state (not used in main product flows) |
 
 ---
 
@@ -493,7 +507,7 @@ The `StepRecord` shape is identical whether the step comes from a live SSE `step
 ## AI Agents (Local Backend)
 
 ### ImageContextRetrieverAgent
-**File:** `backend/agents/` (called from `context_builder.py`)
+**File:** `backend/agents/image_context_retriever_agent.py` (called from `context_builder.py`)
 
 Takes a screenshot/image (base64) and extracts structured context:
 - Screens detected
@@ -522,6 +536,16 @@ Each test case: `{ test_key, title, goal, description, category, priority, expec
 
 **Default model:** `claude-haiku-4-5` (cost-optimised for text generation).
 
+### DocumentContextRetrieverAgent
+**File:** `backend/agents/document_context_retriever_agent.py`
+
+Extracts structured context from uploaded PDF/document files. Called during feature context build when documents are part of the assets.
+
+### VideoContextRetrieverAgent
+**File:** `backend/agents/video_context_retriever_agent.py`
+
+Extracts structured context from uploaded video files (frame sampling + analysis). Called during feature context build when videos are part of the assets.
+
 ### ClaudeComputerUseAgent
 **File:** `backend/agents/claude_computer_use_agent.py`
 
@@ -546,17 +570,18 @@ Production execution agent. Uses Anthropic's native Computer Use beta to control
 |----------|--------|---------|
 | `/windows` | GET | List currently open OS windows with bounds |
 | `/health` | GET | Backend health check |
-| `/permissions` | GET | Check Screen Recording + Accessibility grants |
+| `/permissions` | GET | Check Screen Recording + Accessibility grants (from backend process perspective) |
+| `/permissions/request` | POST | Attempt to trigger macOS permission dialogs |
 | `/cloud/project/create` | POST (SSE) | Create project with AI context |
 | `/cloud/project/{id}/update-context` | POST (SSE) | Rebuild project context |
 | `/cloud/feature/{id}/build-context` | POST (SSE) | Build or rebuild feature context |
 | `/cloud/feature/{id}/generate-tests` | POST (SSE) | Generate test cases via AI |
+| `/cloud/feature/{id}/save-tests` | POST | Save a set of test cases to cloud (called after generate) |
 | `/feature/{id}/execute` | POST (SSE) | **Production** — execute test suite on a window |
 | `/feature/{id}/execute/pause` | POST | Signal backend to pause after current step |
 | `/feature/{id}/execute/resume` | POST | Resume a paused execution (optional guidance) |
 | `/feature/{id}/execute/abort` | POST | Abort execution loop immediately |
-| `/feature/{id}/execute/guidance` | POST | Inject user guidance when agent is stuck |
-| `/cu` | POST (SSE) | Legacy POC — free-form CU, not used in production |
+| `/feature/{id}/execute/{test_id}/guidance` | POST | Inject user guidance when agent is stuck |
 
 All SSE endpoints stream `data: { event, ...payload }\n\n` lines.
 
@@ -867,14 +892,108 @@ cd frontend && npm run electron:build
 # → outputs: frontend/release/AutoQA-1.0.0.dmg
 ```
 
-### Open TODOs for Electron Distribution
+### Electron Distribution — Current Status (Implemented)
 
-- [ ] **PyInstaller spec file** — create `backend/autoqa-backend.spec` with all hidden imports and data dirs hardcoded so the build is reproducible
-- [ ] **Startup readiness check** — instead of a fixed `setTimeout(1500)`, poll `GET http://localhost:8000/health` in `electron/main.ts` before calling `createWindow()` (avoids race condition on slow machines)
-- [ ] **Port conflict handling** — if `8000` is already in use, find a free port and pass it to the backend binary as an env var; update `ipcMain.handle('get-backend-url')` to return the actual port
-- [ ] **Crash recovery** — listen to `backendProcess.on('exit')` and restart it automatically if it crashes unexpectedly (with a max retry count)
-- [ ] **Loading screen** — show a splash/loading UI in the BrowserWindow while the backend is starting up, then navigate to the real app once `/health` responds
-- [ ] **Entitlements plist** — create `frontend/build/entitlements.mac.plist` with required keys (see above)
-- [ ] **Code signing** — obtain an Apple Developer certificate and configure `electron-builder` with `identity` + `notarize` so macOS Gatekeeper doesn't block the app
-- [ ] **Windows support** — test PyInstaller on Windows (`autoqa-backend.exe`), update `extraResources` path, and handle the `.exe` extension in `electron/main.ts`
+All TODOs below are **done**:
+
+- **PyInstaller spec file** — `backend/autoqa-backend.spec` exists with all hidden imports and data dirs
+- **Startup readiness check** — `electron/main.ts` listens for Uvicorn's `"Application startup complete."` on stdout (reliable, no polling race condition)
+- **Port conflict handling** — `findFreePort(8000)` finds a free port at startup; `ipcMain.handle('get-backend-url')` returns the actual port
+- **Crash recovery** — backend restarts automatically up to `MAX_RESTARTS = 3` times with exponential backoff
+- **Loading screen** — `loading.html` is shown while backend starts; swapped to `index.html` once ready
+- **Entitlements plist** — `frontend/build/entitlements.mac.plist` exists
+- **Code signing** — not done (no Apple Developer Program). Users download the `.dmg` and manually allow it in Gatekeeper. This is acceptable for now.
+
+**Build commands (current):**
+```bash
+# 1. Build Python sidecar
+cd backend && .venv/bin/pyinstaller autoqa-backend.spec --noconfirm
+# Output: backend/dist/autoqa-backend
+
+# 2. Build Electron DMG
+cd frontend && npm run build
+# Output: frontend/release/AutoQA-1.0.0-arm64.dmg
+```
+
+---
+
+## Cloud Backend Deployment
+
+**Platform:** Render (free plan)
+**Database:** MongoDB Atlas (M0 free tier)
+
+### Environment Variables (set in Render dashboard)
+| Variable | Value |
+|----------|-------|
+| `MONGODB_URI` | MongoDB Atlas connection string |
+| `SECRET_KEY` | JWT signing secret |
+| `ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins |
+
+### MongoDB Atlas Setup
+- Network Access: `0.0.0.0/0` (Allow Access from Anywhere) — required for Render's dynamic IPs
+- The cloud backend URL is set in `frontend/src/api/config.ts` → `getCloudBaseUrl()`
+
+### Deployment
+- Render auto-deploys from the `cloud-backend/` subdirectory of the monorepo
+- `cloud-backend/runtime.txt` pins Python to `3.12.6`
+- No separate repo needed — Render supports monorepo subdirectory deployments
+
+---
+
+## Anthropic API Key Management
+
+AutoQA uses Claude for test execution. The API key is provided by the user and stored securely on their machine.
+
+### Storage: Electron `safeStorage` (OS Keychain)
+
+Keys are encrypted using the OS-level keychain (macOS Keychain, Windows DPAPI) via Electron's `safeStorage` API. The encrypted bytes are written to a file in the user's app data directory — never stored in plaintext, never sent to any server.
+
+**File location:** `~/Library/Application Support/autoqa-desktop/anthropic-key.bin`
+
+### IPC Handlers (`electron/main.ts`)
+
+| Channel | Direction | Purpose |
+|---------|-----------|---------|
+| `save-anthropic-key` | renderer → main | Encrypt + write key to disk |
+| `get-anthropic-key` | renderer → main | Decrypt + return key string |
+| `delete-anthropic-key` | renderer → main | Delete key file from disk |
+
+### Frontend Store (`src/store/keyStore.ts`)
+
+`useKeyStore` holds the key in memory (not persisted to localStorage) for the current session. On app load, `getAnthropicKey()` IPC is called to hydrate the store.
+
+### Onboarding Flow (`src/components/OnboardingModal.tsx`)
+
+A two-step modal shown after login/signup if onboarding is not complete:
+
+1. **Step 1 — Permissions** — checks Screen Recording + Accessibility status via `GET /permissions` (local backend). Shows per-permission rows with "Open Settings" buttons that open the relevant System Preferences pane.
+2. **Step 2 — API Key** — user pastes their Anthropic API key. Saved via `save-anthropic-key` IPC. Has a "Skip for now" option.
+
+**Onboarding state** is tracked in `src/store/onboardingStore.ts` (persisted to localStorage via Zustand `persist`). `setComplete()` marks it done; `reset()` is called on sign-out so the modal shows again on next login.
+
+**When the modal shows:** `src/routes/app.tsx` (root layout) checks `!onboardingComplete && isAuthenticated` and renders `<OnboardingModal open />` over the app.
+
+### Key Flow into Test Execution
+
+The Anthropic key is passed in the request body to `POST /feature/{id}/execute`:
+```typescript
+{ provider: "claude", anthropic_key: useKeyStore.getState().key }
+```
+
+The local backend uses it to initialise `ClaudeComputerUseAgent` with the user's own key. The key is never forwarded to the cloud backend.
+
+---
+
+## macOS Permissions (Runtime — cannot be pre-granted)
+
+| Permission | Used for | Granted by |
+|-----------|---------|-----------|
+| Screen Recording | `mss` window capture, `CGWindowListCopyWindowInfo` | System Settings → Privacy → Screen Recording |
+| Accessibility | `pyautogui` clicks/keyboard | System Settings → Privacy → Accessibility |
+
+**Important:** macOS TCC attributes permissions to the **calling process**. `autoqa-backend` (the PyInstaller binary) needs its own TCC entries — it does NOT inherit AutoQA.app's grants. The backend registers itself for Screen Recording via `CGRequestScreenCaptureAccess()` on startup. Accessibility is granted by the user via System Preferences after the native popup fires during the first test run click.
+
+**Permission check endpoint:** `GET /permissions` — returns `{ screen_recording: bool, accessibility: bool }` from the backend process's perspective (ground truth).
+
+**Sign-out behaviour:** `clearAuth()` + `resetOnboarding()` are both called on sign-out so the permission + key onboarding re-runs on next login.
 - [ ] **CI build pipeline** — add a GitHub Actions workflow that: (1) builds the Python binary on the target OS, (2) runs `npm run electron:build`, (3) uploads the `.dmg`/`.exe` as release artifacts

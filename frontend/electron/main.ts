@@ -210,33 +210,17 @@ ipcMain.handle('check-permissions', () => {
   };
 });
 
-// Opens System Preferences → Accessibility (prompts if not yet decided).
-// isTrustedAccessibilityClient(true) triggers the macOS dialog; shell.openExternal
-// is a guaranteed fallback in case the dialog doesn't auto-open.
 ipcMain.handle('request-accessibility', () => {
-  const trusted = systemPreferences.isTrustedAccessibilityClient(true);
-  if (!trusted) {
-    shell.openExternal(
-      'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-    );
-  }
-  return trusted;
+  shell.openExternal(
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  );
 });
 
-// Requests Screen Recording permission via CGRequestScreenCaptureAccess() then
-// opens System Preferences so the user can toggle the switch.
-// Two-step because on macOS 14+, CGRequestScreenCaptureAccess() adds the app to
-// the TCC list but does not always open System Preferences automatically.
-ipcMain.handle('request-screen-recording', async () => {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const macPerms = require('node-mac-permissions');
-    await macPerms.requestPermission('screen');
-  } catch (e) {
-    console.error('[electron] node-mac-permissions failed:', e);
-  }
-  // Always open System Preferences → Screen Recording.
-  // If CGRequestScreenCaptureAccess() succeeded, AutoQA is now in the list.
+// Opens System Preferences → Screen Recording so the user can grant access.
+// The backend binary (autoqa-backend) registers itself with TCC via
+// CGRequestScreenCaptureAccess() when the /permissions endpoint is called,
+// so it already appears in the list by the time the user opens Settings here.
+ipcMain.handle('request-screen-recording', () => {
   shell.openExternal(
     'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   );

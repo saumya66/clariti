@@ -2,6 +2,9 @@
 .env
 .env.local
 venv/
+.venv/
+backend/build/
+backend/dist/
 __pycache__/
 *.pyc
 

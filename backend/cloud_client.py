@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-CLOUD_API_URL = os.getenv("CLOUD_API_URL", "").rstrip("/")
+CLOUD_API_URL = os.getenv("CLOUD_API_URL", "https://clariti-5zlo.onrender.com").rstrip("/")
 
 
 def is_configured() -> bool:

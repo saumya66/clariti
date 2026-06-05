@@ -216,6 +216,11 @@ def check_permissions() -> dict:
     return _check_permissions_macos()
 
 
+def request_permissions(permission_type: str = "all") -> dict:
+    """Alias for check_permissions — kept for API compatibility."""
+    return check_permissions()
+
+
 # =============================================================================
 # macOS Implementation
 # =============================================================================
@@ -277,25 +282,28 @@ def _check_permissions_macos() -> dict:
         "accessibility": False
     }
     
-    # Check screen recording permission by trying to capture
+    # Use CGRequestScreenCaptureAccess (not CGPreflightScreenCaptureAccess) so that
+    # THIS BINARY (autoqa-backend) is registered in the macOS TCC database and appears
+    # in System Preferences → Privacy & Security → Screen Recording.
+    # On macOS 14+, CGWindowListCopyWindowInfo checks the CALLING PROCESS's TCC entry
+    # directly — the parent app's (AutoQA.app's) Screen Recording grant is NOT inherited
+    # by unsigned child binaries, so the backend must have its own TCC entry.
     try:
-        with mss.mss() as sct:
-            # Try to grab a small region
-            sct.grab({"left": 0, "top": 0, "width": 1, "height": 1})
-            result["screen_recording"] = True
+        from Quartz import CGRequestScreenCaptureAccess
+        result["screen_recording"] = bool(CGRequestScreenCaptureAccess())
     except Exception:
-        result["screen_recording"] = False
+        try:
+            from Quartz import CGPreflightScreenCaptureAccess
+            result["screen_recording"] = bool(CGPreflightScreenCaptureAccess())
+        except Exception:
+            result["screen_recording"] = False
     
-    # Check accessibility permission
     try:
         from ApplicationServices import AXIsProcessTrusted
-        result["accessibility"] = AXIsProcessTrusted()
-    except ImportError:
-        # If we can't import, assume it's fine (will fail later if not)
-        result["accessibility"] = True
+        result["accessibility"] = bool(AXIsProcessTrusted())
     except Exception:
         result["accessibility"] = False
-    
+
     return result
 
 
