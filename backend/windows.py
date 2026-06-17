@@ -217,8 +217,17 @@ def check_permissions() -> dict:
 
 
 def request_permissions(permission_type: str = "all") -> dict:
-    """Alias for check_permissions — kept for API compatibility."""
-    return check_permissions()
+    """
+    Actively trigger the macOS permission dialogs, then return current status.
+
+    Unlike check_permissions() which is a passive preflight read, this function
+    calls the APIs that macOS intercepts to show the native permission prompts:
+      - screen_recording: CGRequestScreenCaptureAccess()
+      - accessibility:    AXIsProcessTrustedWithOptions(prompt=True)
+    """
+    if get_platform() != "darwin":
+        return {"screen_recording": True, "accessibility": True}
+    return _request_permissions_macos(permission_type)
 
 
 # =============================================================================
@@ -276,33 +285,84 @@ def _list_windows_macos() -> list[WindowInfo]:
 
 
 def _check_permissions_macos() -> dict:
-    """Check macOS permissions for screen recording and accessibility."""
+    """
+    Passive preflight check — reads TCC status without triggering any dialogs.
+    Use request_permissions() to actively prompt the user.
+    """
     result = {
         "screen_recording": False,
         "accessibility": False
     }
-    
-    # Use CGRequestScreenCaptureAccess (not CGPreflightScreenCaptureAccess) so that
-    # THIS BINARY (autoqa-backend) is registered in the macOS TCC database and appears
-    # in System Preferences → Privacy & Security → Screen Recording.
-    # On macOS 14+, CGWindowListCopyWindowInfo checks the CALLING PROCESS's TCC entry
-    # directly — the parent app's (AutoQA.app's) Screen Recording grant is NOT inherited
-    # by unsigned child binaries, so the backend must have its own TCC entry.
+
     try:
-        from Quartz import CGRequestScreenCaptureAccess
-        result["screen_recording"] = bool(CGRequestScreenCaptureAccess())
+        from Quartz import CGPreflightScreenCaptureAccess
+        result["screen_recording"] = bool(CGPreflightScreenCaptureAccess())
     except Exception:
-        try:
-            from Quartz import CGPreflightScreenCaptureAccess
-            result["screen_recording"] = bool(CGPreflightScreenCaptureAccess())
-        except Exception:
-            result["screen_recording"] = False
-    
+        result["screen_recording"] = False
+
     try:
         from ApplicationServices import AXIsProcessTrusted
         result["accessibility"] = bool(AXIsProcessTrusted())
     except Exception:
         result["accessibility"] = False
+
+    return result
+
+
+def _request_permissions_macos(permission_type: str = "all") -> dict:
+    """
+    Actively trigger macOS permission prompts, then return current status.
+
+    CGRequestScreenCaptureAccess() registers THIS process in the TCC database
+    and shows the Screen Recording prompt if not already granted.
+
+    AXIsProcessTrustedWithOptions(prompt=True) shows the Accessibility prompt
+    or opens System Preferences → Privacy & Security → Accessibility if not
+    already trusted.
+    """
+    result = {
+        "screen_recording": False,
+        "accessibility": False,
+    }
+
+    if permission_type in ("screen_recording", "all"):
+        try:
+            from Quartz import CGRequestScreenCaptureAccess
+            result["screen_recording"] = bool(CGRequestScreenCaptureAccess())
+        except Exception:
+            try:
+                from Quartz import CGPreflightScreenCaptureAccess
+                result["screen_recording"] = bool(CGPreflightScreenCaptureAccess())
+            except Exception:
+                result["screen_recording"] = False
+    else:
+        # Not requesting screen recording — just read current status
+        try:
+            from Quartz import CGPreflightScreenCaptureAccess
+            result["screen_recording"] = bool(CGPreflightScreenCaptureAccess())
+        except Exception:
+            result["screen_recording"] = False
+
+    if permission_type in ("accessibility", "all"):
+        try:
+            from ApplicationServices import AXIsProcessTrustedWithOptions
+            # prompt=True triggers the native macOS accessibility dialog
+            result["accessibility"] = bool(
+                AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
+            )
+        except Exception:
+            # Fall back to passive check if AXIsProcessTrustedWithOptions unavailable
+            try:
+                from ApplicationServices import AXIsProcessTrusted
+                result["accessibility"] = bool(AXIsProcessTrusted())
+            except Exception:
+                result["accessibility"] = False
+    else:
+        try:
+            from ApplicationServices import AXIsProcessTrusted
+            result["accessibility"] = bool(AXIsProcessTrusted())
+        except Exception:
+            result["accessibility"] = False
 
     return result
 

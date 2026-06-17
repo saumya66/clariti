@@ -107,7 +107,9 @@ async def lifespan(app: FastAPI):
         print(f"⚠ Warning: {e}")
         print("  The /act endpoint will fail until GEMINI_API_KEY is set.")
     
-    perms = check_permissions()
+    # Actively request permissions on startup so macOS shows the native dialogs
+    # immediately rather than waiting for the first real API usage.
+    perms = request_permissions("all")
     if not perms.get("screen_recording"):
         print("⚠ Warning: Screen Recording permission not granted")
         print("  Go to System Preferences > Privacy & Security > Screen Recording")

@@ -1,6 +1,8 @@
 ---
 alwaysApply: false
 ---
+> **STANDING INSTRUCTION FOR AI AGENTS:** After any code change that the user has tested and verified, update this file to reflect the new state of the system. Keep every section accurate — remove outdated descriptions, update flow diagrams, and correct any file/endpoint references that have changed. This document is the source of truth for the codebase architecture.
+
 # Moonshot — Architecture & Flows Reference
 
 **Moonshot** is an AI-powered QA automation platform. It lets users create test suites from app screenshots/text context, generate test cases with AI, and execute them autonomously on real running apps using an AI vision agent.
@@ -54,10 +56,10 @@ Three independent services communicate to deliver the full product:
 ```
 /                          → routes/index.tsx       (redirect to /app or /login)
 /login                     → routes/login.tsx        (auth page)
-/app                       → routes/app.tsx          (layout: sidebar + SidebarInset + OnboardingModal)
+/app                       → routes/app.tsx          (layout: sidebar + SidebarInset)
   /app/                    → routes/app/index.tsx    (projects list)
   /app/create              → routes/app/create.tsx   (free-form create, legacy)
-  /app/settings            → routes/app/settings.tsx (API key management — update/remove key post-onboarding)
+  /app/settings            → routes/app/settings.tsx (API key management — add/update/remove Anthropic key)
   /app/execute             → routes/app/execute.tsx  (test suite execution + replay page)
   /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard — Outlet only)
     /app/projects/$projectId/          → $projectId/index.tsx    (project overview bento)
@@ -69,7 +71,7 @@ Three independent services communicate to deliver the full product:
 /execute                   → routes/execute.tsx      (redirects to /app/execute if logged in)
 ```
 
-**`/app/settings`** — lets users update or remove their Anthropic API key after the onboarding modal. Uses the same `save-anthropic-key` / `delete-anthropic-key` IPC calls. Accessible from the sidebar.
+**`/app/settings`** — the primary place for users to add, update, or remove their Anthropic API key. Uses `save-anthropic-key` / `delete-anthropic-key` IPC calls. Accessible from the sidebar.
 
 **Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper. Both `$projectId.tsx` and `$featureId.tsx` are pure layout guards that only render `<Outlet />`.
 
@@ -115,7 +117,6 @@ src/
 | Store | File | Persisted | Purpose |
 |-------|------|-----------|---------|
 | `useAuthStore` | `authStore.ts` | ✅ localStorage | JWT token, user, `skipped` flag. `clearAuth()` resets all. |
-| `useOnboardingStore` | `onboardingStore.ts` | ✅ localStorage | `complete` flag + `reset()`. Reset on sign-out. |
 | `useKeyStore` | `keyStore.ts` | ❌ memory only | Anthropic key in-memory for session. Hydrated from OS keychain via IPC on load. |
 | `useAppStore` | `useAppStore.ts` | ❌ | Active sidebar section |
 | `testSuiteExecutionStore` | `testSuiteExecutionStore.ts` | ❌ | Live test run state — tests, activity log, pause/abort/guidance state |
@@ -962,16 +963,9 @@ Keys are encrypted using the OS-level keychain (macOS Keychain, Windows DPAPI) v
 
 `useKeyStore` holds the key in memory (not persisted to localStorage) for the current session. On app load, `getAnthropicKey()` IPC is called to hydrate the store.
 
-### Onboarding Flow (`src/components/OnboardingModal.tsx`)
+### API Key Entry
 
-A two-step modal shown after login/signup if onboarding is not complete:
-
-1. **Step 1 — Permissions** — checks Screen Recording + Accessibility status via `GET /permissions` (local backend). Shows per-permission rows with "Open Settings" buttons that open the relevant System Preferences pane.
-2. **Step 2 — API Key** — user pastes their Anthropic API key. Saved via `save-anthropic-key` IPC. Has a "Skip for now" option.
-
-**Onboarding state** is tracked in `src/store/onboardingStore.ts` (persisted to localStorage via Zustand `persist`). `setComplete()` marks it done; `reset()` is called on sign-out so the modal shows again on next login.
-
-**When the modal shows:** `src/routes/app.tsx` (root layout) checks `!onboardingComplete && isAuthenticated` and renders `<OnboardingModal open />` over the app.
+There is no onboarding modal. Users add their Anthropic API key at any time via **Settings** (`/app/settings`). The key field is always accessible from the sidebar — no forced flow on first login.
 
 ### Key Flow into Test Execution
 
@@ -991,9 +985,24 @@ The local backend uses it to initialise `ClaudeComputerUseAgent` with the user's
 | Screen Recording | `mss` window capture, `CGWindowListCopyWindowInfo` | System Settings → Privacy → Screen Recording |
 | Accessibility | `pyautogui` clicks/keyboard | System Settings → Privacy → Accessibility |
 
-**Important:** macOS TCC attributes permissions to the **calling process**. `autoqa-backend` (the PyInstaller binary) needs its own TCC entries — it does NOT inherit AutoQA.app's grants. The backend registers itself for Screen Recording via `CGRequestScreenCaptureAccess()` on startup. Accessibility is granted by the user via System Preferences after the native popup fires during the first test run click.
+**Important:** macOS TCC attributes permissions to the **calling process**. `autoqa-backend` (the PyInstaller binary) needs its own TCC entries — it does NOT inherit AutoQA.app's grants.
 
-**Permission check endpoint:** `GET /permissions` — returns `{ screen_recording: bool, accessibility: bool }` from the backend process's perspective (ground truth).
+**Permission functions in `backend/windows.py`:**
 
-**Sign-out behaviour:** `clearAuth()` + `resetOnboarding()` are both called on sign-out so the permission + key onboarding re-runs on next login.
-- [ ] **CI build pipeline** — add a GitHub Actions workflow that: (1) builds the Python binary on the target OS, (2) runs `npm run electron:build`, (3) uploads the `.dmg`/`.exe` as release artifacts
+| Function | Behaviour |
+|----------|-----------|
+| `check_permissions()` | Passive preflight read — uses `CGPreflightScreenCaptureAccess` + `AXIsProcessTrusted`. No dialog shown. |
+| `request_permissions(type)` | Actively triggers native macOS dialogs — `CGRequestScreenCaptureAccess()` for screen recording, `AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})` for accessibility. |
+
+**Startup behaviour (`backend/main.py` lifespan):** `request_permissions("all")` is called at startup so both macOS permission dialogs fire immediately when the backend starts — in both the DMG build and local dev (`python3 main.py`). Previously only `check_permissions()` (passive) was called, which meant the accessibility dialog never appeared in dev mode.
+
+**Endpoints:**
+- `GET /permissions` — calls `check_permissions()`, returns `{ screen_recording: bool, accessibility: bool }` (passive, no dialog)
+- `POST /permissions/request` — calls `request_permissions(type)`, triggers the native dialog for the requested permission type
+
+**To reset all permissions (useful during testing):**
+```bash
+sudo tccutil reset ScreenCapture
+sudo tccutil reset Accessibility
+```
+After running, macOS will show the native permission dialogs again on next use.
