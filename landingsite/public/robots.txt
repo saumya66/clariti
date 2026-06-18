@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://clariti.app/sitemap-index.xml
+Sitemap: https://clarityhq.com/sitemap-index.xml

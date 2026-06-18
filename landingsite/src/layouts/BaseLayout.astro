@@ -8,9 +8,9 @@ interface Props {
 }
 
 const {
-  title = 'Clariti — AI-Powered QA Automation',
-  description = 'Clariti is an AI-native QA agent that sees your app, understands it, and runs tests autonomously. It Sees. It Thinks. It Asks. It Judges.',
-  ogImage = '/og.png',
+  title = 'Clariti',
+  description = 'Clariti is an AI-native QA agent that sees your app, understands it, and runs tests autonomously. It Sees. It Thinks. It Acts. It Judges.',
+  ogImage = '/og-image.png',
 } = Astro.props;
 
 const canonicalUrl = Astro.url.href;
@@ -23,7 +23,7 @@ const jsonLd = JSON.stringify({
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'macOS',
   description,
-  url: 'https://clariti.app',
+  url: 'https://clarityhq.com',
   offers: {
     '@type': 'Offer',
     price: '0',
@@ -61,7 +61,7 @@ const jsonLd = JSON.stringify({
     <script type="application/ld+json" set:html={jsonLd} />
 
     <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.png" />
   </head>
   <body class="bg-[#09090b] antialiased">
     <slot />
