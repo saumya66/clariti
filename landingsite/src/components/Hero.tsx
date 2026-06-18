@@ -2,7 +2,7 @@ import { useState } from 'react';
 import Aurora from './Aurora';
 import BlurText from './BlurText';
 
-const TAGLINE = 'It Sees. It Thinks. It Asks. It Judges. Just like your QA would.';
+const TAGLINE = 'It Sees. It Thinks. It Acts. It Judges. Just like your QA would.';
 
 // ── Timing ─────────────────────────────────────────────────────────────────
 const CLARITI_DURATION  = 1000;   // ms the "Clariti" blur-in takes
@@ -29,27 +29,12 @@ export default function Hero() {
     <div className="relative min-h-screen flex flex-col bg-[#09090b] overflow-hidden">
       <Aurora />
 
-      {/* Nav */}
-      <nav className="relative z-10 flex items-center px-6 md:px-12 h-16">
-        <span className="text-white/40 font-semibold text-lg tracking-tight select-none">
-          Clariti
-        </span>
-      </nav>
-
       {/* Hero */}
       <main className="relative z-10 flex flex-1 items-center justify-center px-6 pb-24 pt-4">
         <div className="text-center max-w-4xl mx-auto">
 
-          {/* Eyebrow */}
-          <p
-            className="animate-fade-up inline-block text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400 mb-6"
-            style={{ animationDelay: '80ms' }}
-          >
-            AI-Powered QA Automation
-          </p>
-
           {/* ── Main hero word ── */}
-          <h1 className="text-[clamp(5rem,18vw,10rem)] font-black tracking-[-0.04em] leading-[0.95] text-white">
+          <h1 className="text-[clamp(3.5rem,10vw,6.5rem)] font-black tracking-[-0.04em] leading-[0.95] text-white">
             <BlurText
               text="Clariti"
               startDelay={150}
