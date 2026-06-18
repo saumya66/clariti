@@ -13,8 +13,9 @@ const {
   ogImage = '/og-image.png',
 } = Astro.props;
 
+const siteUrl = Astro.site?.href ?? 'https://claritihq.com';
 const canonicalUrl = Astro.url.href;
-const ogImageAbsolute = new URL(ogImage, Astro.site).href;
+const ogImageAbsolute = new URL(ogImage, siteUrl).href;
 
 const jsonLd = JSON.stringify({
   '@context': 'https://schema.org',
@@ -23,7 +24,7 @@ const jsonLd = JSON.stringify({
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'macOS',
   description,
-  url: 'https://clarityhq.com',
+  url: 'https://claritihq.com',
   offers: {
     '@type': 'Offer',
     price: '0',
@@ -49,6 +50,10 @@ const jsonLd = JSON.stringify({
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImageAbsolute} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Clariti" />
     <meta property="og:url" content={canonicalUrl} />
 
     <!-- Twitter Card -->
@@ -56,6 +61,7 @@ const jsonLd = JSON.stringify({
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageAbsolute} />
+    <meta name="twitter:image:alt" content="Clariti" />
 
     <!-- Structured Data -->
     <script type="application/ld+json" set:html={jsonLd} />

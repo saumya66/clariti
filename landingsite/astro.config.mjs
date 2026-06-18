@@ -4,7 +4,7 @@ import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  site: 'https://clarityhq.com',
+  site: 'https://claritihq.com',
   integrations: [
     react(),
     sitemap(),
