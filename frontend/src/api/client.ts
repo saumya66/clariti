@@ -1,4 +1,4 @@
-// API Client for AutoQA Backend
+// API Client for Clariti Backend
 // Per frontend_architecture_guide: Axios with interceptors
 
 import axios from 'axios';
@@ -72,10 +72,10 @@ export interface PermissionsStatus {
 }
 
 export async function getPermissions(): Promise<PermissionsStatus> {
-  // Both permissions are checked from the BACKEND process (autoqa-backend).
-  // autoqa-backend is the process that actually calls CGWindowListCopyWindowInfo
+  // Both permissions are checked from the BACKEND process (clariti-backend).
+  // clariti-backend is the process that actually calls CGWindowListCopyWindowInfo
   // (Screen Recording) and CGEventPost/clicks (Accessibility), so its TCC status
-  // is the ground truth.  Using Electron IPC would check AutoQA.app's TCC entries
+  // is the ground truth.  Using Electron IPC would check Clariti.app's TCC entries
   // instead, which registers the wrong process in System Preferences.
   try {
     const res = await apiClient.get<PermissionsStatus>('/permissions');

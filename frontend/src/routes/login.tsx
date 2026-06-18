@@ -74,7 +74,7 @@ function LoginPage() {
             <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <FlaskConical className="size-5" />
             </div>
-            <span className="text-xl font-semibold text-foreground">AutoQA</span>
+            <span className="text-xl font-semibold text-foreground">Clariti</span>
           </div>
 
           {/* Welcome */}
@@ -253,7 +253,7 @@ function LoginPage() {
 
         {/* Footer */}
         <p className="mt-6 text-xs text-muted-foreground">
-          © 2024 AutoQA Inc. · Privacy Policy · Terms of Service
+          © 2024 Clariti Inc. · Privacy Policy · Terms of Service
         </p>
       </div>
 

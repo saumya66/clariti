@@ -1,5 +1,5 @@
 """
-Vision Module for AutoQA
+Vision Module for Clariti
 
 Handles Gemini AI integration for UI element detection.
 Uses the official google-genai SDK.

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for autoqa-backend
-# Run: pyinstaller autoqa-backend.spec
-# Output: dist/autoqa-backend (single binary)
+# PyInstaller spec for clariti-backend
+# Run: pyinstaller clariti-backend.spec
+# Output: dist/clariti-backend (single binary)
 
 block_cipher = None
 
@@ -75,7 +75,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='autoqa-backend',
+    name='clariti-backend',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

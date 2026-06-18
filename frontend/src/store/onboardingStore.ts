@@ -15,7 +15,7 @@ export const useOnboardingStore = create<OnboardingState>()(
       reset: () => set({ complete: false }),
     }),
     {
-      name: 'autoqa-onboarding',
+      name: 'clariti-onboarding',
     }
   )
 );

@@ -8,7 +8,7 @@ _ENV_FILE = _CLOUD_ROOT / ".env"
 class Settings(BaseSettings):
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"
-    MONGODB_DB: str = "autoqa"
+    MONGODB_DB: str = "clariti"
 
     # Server
     HOST: str = "0.0.0.0"

@@ -25,7 +25,7 @@ Provider = Literal["gemini", "claude"]
 
 class BaseAgent(ABC):
     """
-    Base class for all AutoQA agents.
+    Base class for all Clariti agents.
 
     Provides common functionality for:
     - AI provider communication (Gemini via google-genai SDK, Claude via anthropic SDK)

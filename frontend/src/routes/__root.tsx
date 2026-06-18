@@ -24,7 +24,7 @@ function RootLayout() {
       {isAppRoute ? (
         <header className="drag-region flex h-12 shrink-0 items-center justify-center border-b border-border bg-card">
           <div className="absolute left-0 top-0 h-12 w-20" aria-hidden />
-          <span className="text-sm font-medium text-foreground">AutoQA</span>
+          <span className="text-sm font-medium text-foreground">Clariti</span>
         </header>
       ) : (
         <header className="drag-region h-12 flex items-center justify-between px-4 bg-card border-b border-border">

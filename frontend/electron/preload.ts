@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAnthropicKey: (): Promise<string | null> => ipcRenderer.invoke('get-anthropic-key'),
   deleteAnthropicKey: () => ipcRenderer.invoke('delete-anthropic-key'),
 
-  // macOS permission checking — reads AutoQA.app TCC status via systemPreferences
+  // macOS permission checking — reads Clariti.app TCC status via systemPreferences
   checkPermissions: (): Promise<{ screen_recording: boolean; accessibility: boolean }> =>
     ipcRenderer.invoke('check-permissions'),
 

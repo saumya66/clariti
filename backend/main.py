@@ -1,5 +1,5 @@
 """
-AutoQA Backend Server
+Clariti Backend Server
 
 FastAPI server that provides endpoints for window management and action execution.
 """
@@ -120,12 +120,12 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    print("AutoQA server shutting down...")
+    print("Clariti server shutting down...")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="AutoQA",
+    title="Clariti",
     description="Visual QA Agent - Autonomous UI Testing",
     version="1.0.0",
     lifespan=lifespan
@@ -300,7 +300,7 @@ class AuthRegisterRequest(BaseModel):
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "service": "AutoQA", "version": "1.0.0"}
+    return {"status": "ok", "service": "Clariti", "version": "1.0.0"}
 
 
 # ─── Auth (proxy to cloud) ───────────────────────────────────────────────────
@@ -3787,7 +3787,7 @@ if __name__ == "__main__":
     
     print(f"""
     ╔════════════════════════════════════════════════════╗
-    ║               AutoQA Server                        ║
+    ║               Clariti Server                        ║
     ║       Visual QA Agent - Backend v3.0               ║
     ╠════════════════════════════════════════════════════╣
     ║  Test Execution (Reactive):                        ║

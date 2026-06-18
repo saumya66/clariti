@@ -43,7 +43,7 @@ function findFreePort(preferred: number): Promise<number> {
 
 function startBackend(timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const backendBin = path.join(process.resourcesPath, 'backend', 'autoqa-backend');
+    const backendBin = path.join(process.resourcesPath, 'backend', 'clariti-backend');
 
     // Write all backend output to a persistent log file for diagnostics
     const logPath = path.join(app.getPath('userData'), 'backend.log');
@@ -195,11 +195,11 @@ app.on('before-quit', () => {
 // ─── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('get-backend-url', () => {
-  return process.env.AUTOQA_BACKEND_URL || `http://127.0.0.1:${backendPort}`;
+  return process.env.CLARITI_BACKEND_URL || `http://127.0.0.1:${backendPort}`;
 });
 
 // Permission checking via Electron/macOS APIs
-// These check AutoQA.app's TCC status directly — accurate and instant,
+// These check Clariti.app's TCC status directly — accurate and instant,
 // no dependency on the backend process being alive or restarted.
 ipcMain.handle('check-permissions', () => {
   const screen = systemPreferences.getMediaAccessStatus('screen');
@@ -217,7 +217,7 @@ ipcMain.handle('request-accessibility', () => {
 });
 
 // Opens System Preferences → Screen Recording so the user can grant access.
-// The backend binary (autoqa-backend) registers itself with TCC via
+// The backend binary (clariti-backend) registers itself with TCC via
 // CGRequestScreenCaptureAccess() when the /permissions endpoint is called,
 // so it already appears in the list by the time the user opens Settings here.
 ipcMain.handle('request-screen-recording', () => {

@@ -1,4 +1,26 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&display=swap');
+
+@keyframes draw-underline {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+
+@layer utilities {
+  .font-handwriting {
+    font-family: 'Caveat', cursive;
+  }
+  .animate-draw-underline::after {
+    content: '';
+    display: block;
+    height: 2px;
+    width: 0;
+    background: linear-gradient(to right, #6366f1, #8b5cf6, #3b82f6);
+    border-radius: 9999px;
+    animation: draw-underline 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: var(--underline-delay, 0ms);
+  }
+}
 
 /* ── Aurora blob animations ── */
 @keyframes aurora-float-1 {

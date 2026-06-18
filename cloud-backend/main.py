@@ -1,5 +1,5 @@
 """
-AutoQA Cloud Backend
+Clariti Cloud Backend
 
 Deployed on Render/Railway. Handles:
 - Auth (register, login, JWT)
@@ -18,7 +18,7 @@ from app.api.v1.router import api_router
 from app.db.mongodb import init_indexes
 
 app = FastAPI(
-    title="AutoQA Cloud API",
+    title="Clariti Cloud API",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -42,7 +42,7 @@ def on_startup():
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "autoqa-cloud"}
+    return {"status": "ok", "service": "clariti-cloud"}
 
 
 if __name__ == "__main__":

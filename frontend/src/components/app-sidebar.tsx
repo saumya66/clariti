@@ -53,13 +53,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <div className="flex items-center justify-between gap-2">
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton size="lg" asChild tooltip="AutoQA">
+              <SidebarMenuButton size="lg" asChild tooltip="Clariti">
                 <Link to={isAuthenticated ? '/app' : '/app/create'}>
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                     <FlaskConical className="size-4" />
                   </div>
                   <div className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-semibold">AutoQA</span>
+                    <span className="truncate font-semibold">Clariti</span>
                   </div>
                 </Link>
               </SidebarMenuButton>

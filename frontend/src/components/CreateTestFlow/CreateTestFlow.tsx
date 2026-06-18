@@ -377,7 +377,7 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
             <Sparkles className="size-4 text-primary-foreground" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground leading-none">AutoQA</p>
+            <p className="text-xs text-muted-foreground leading-none">Clariti</p>
             <p className="text-sm font-semibold text-foreground leading-snug">New Suite</p>
           </div>
         </div>

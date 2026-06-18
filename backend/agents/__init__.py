@@ -1,7 +1,7 @@
 """
-AutoQA Agents Module
+Clariti Agents Module
 
-This module contains reusable AI agents for the AutoQA system.
+This module contains reusable AI agents for the Clariti system.
 Each agent is responsible for a specific task and can be called from anywhere.
 
 Available Agents:

@@ -1,5 +1,5 @@
 """
-Window Management Module for AutoQA
+Window Management Module for Clariti
 
 Handles listing windows and getting window bounds.
 Platform-specific implementations for macOS and Windows.

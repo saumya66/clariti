@@ -1,4 +1,4 @@
-# AutoQA Local Backend Dependencies
+# Clariti Local Backend Dependencies
 # This runs on the user's machine — handles OS-level actions + AI calls
 
 # Server

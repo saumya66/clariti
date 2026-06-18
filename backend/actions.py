@@ -1,5 +1,5 @@
 """
-Actions Module for AutoQA
+Actions Module for Clariti
 
 Handles mouse and keyboard actions with human-like timing.
 """

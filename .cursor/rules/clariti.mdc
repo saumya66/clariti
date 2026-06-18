@@ -760,18 +760,18 @@ Check via `GET /permissions`. The backend emits warnings on startup if either is
 
 ## Electron Distribution Build Plan
 
-The goal is a self-contained `.dmg` that installs `AutoQA.app` — no Python, no Node, no manual setup required from the user.
+The goal is a self-contained `.dmg` that installs `Clariti.app` — no Python, no Node, no manual setup required from the user.
 
 ### Architecture in the Packaged App
 
 ```
-AutoQA.app/
+Clariti.app/
   Contents/
     MacOS/
-      AutoQA                      ← Electron binary (bundles its own Node runtime)
+      Clariti                      ← Electron binary (bundles its own Node runtime)
     Resources/
       backend/
-        autoqa-backend            ← PyInstaller-compiled Python binary (sidecar)
+        clariti-backend            ← PyInstaller-compiled Python binary (sidecar)
       app/
         dist/                     ← Vite-built React UI (HTML/JS/CSS)
         dist-electron/
@@ -779,7 +779,7 @@ AutoQA.app/
           preload.js
 ```
 
-The Electron main process spawns `autoqa-backend` as a **child process** on app startup and kills it on quit. The frontend continues to call `localhost:8000` exactly as it does today — no frontend changes required.
+The Electron main process spawns `clariti-backend` as a **child process** on app startup and kills it on quit. The frontend continues to call `localhost:8000` exactly as it does today — no frontend changes required.
 
 ### Build Steps (in order)
 
@@ -789,7 +789,7 @@ The Electron main process spawns `autoqa-backend` as a **child process** on app 
 # In backend/
 pip install pyinstaller
 pyinstaller --onefile main.py \
-  --name autoqa-backend \
+  --name clariti-backend \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops \
   --hidden-import uvicorn.loops.auto \
@@ -802,7 +802,7 @@ pyinstaller --onefile main.py \
   --hidden-import uvicorn.lifespan.on \
   --add-data "agents:agents" \
   --add-data "models:models"
-# Output: backend/dist/autoqa-backend
+# Output: backend/dist/clariti-backend
 ```
 
 macOS note: The binary needs Accessibility + Screen Recording entitlements. These must be set via `electron-builder`'s `entitlements.mac.plist`.
@@ -811,13 +811,13 @@ macOS note: The binary needs Accessibility + Screen Recording entitlements. Thes
 
 ```json
 "build": {
-  "appId": "com.autoqa.desktop",
-  "productName": "AutoQA",
+  "appId": "com.clariti.desktop",
+  "productName": "Clariti",
   "directories": { "output": "release" },
   "extraResources": [
     {
-      "from": "../backend/dist/autoqa-backend",
-      "to": "backend/autoqa-backend"
+      "from": "../backend/dist/clariti-backend",
+      "to": "backend/clariti-backend"
     }
   ],
   "mac": {
@@ -838,8 +838,8 @@ let backendProcess: ChildProcess | null = null;
 
 function startBackend() {
   const backendBin = isDev
-    ? path.join(__dirname, '../../backend/dist/autoqa-backend')
-    : path.join(process.resourcesPath, 'backend/autoqa-backend');
+    ? path.join(__dirname, '../../backend/dist/clariti-backend')
+    : path.join(process.resourcesPath, 'backend/clariti-backend');
 
   backendProcess = spawn(backendBin, [], {
     env: { ...process.env },
@@ -885,19 +885,19 @@ Screen Recording and Accessibility are runtime permissions — the user still gr
 
 ```bash
 # Step 1 — compile backend (run once or when backend changes)
-cd backend && pyinstaller --onefile main.py --name autoqa-backend ...
+cd backend && pyinstaller --onefile main.py --name clariti-backend ...
 
 # Step 2 — build Electron app
 cd frontend && npm run electron:build
 # → triggers: vite build && electron-builder
-# → outputs: frontend/release/AutoQA-1.0.0.dmg
+# → outputs: frontend/release/Clariti-1.0.0.dmg
 ```
 
 ### Electron Distribution — Current Status (Implemented)
 
 All TODOs below are **done**:
 
-- **PyInstaller spec file** — `backend/autoqa-backend.spec` exists with all hidden imports and data dirs
+- **PyInstaller spec file** — `backend/clariti-backend.spec` exists with all hidden imports and data dirs
 - **Startup readiness check** — `electron/main.ts` listens for Uvicorn's `"Application startup complete."` on stdout (reliable, no polling race condition)
 - **Port conflict handling** — `findFreePort(8000)` finds a free port at startup; `ipcMain.handle('get-backend-url')` returns the actual port
 - **Crash recovery** — backend restarts automatically up to `MAX_RESTARTS = 3` times with exponential backoff
@@ -908,12 +908,12 @@ All TODOs below are **done**:
 **Build commands (current):**
 ```bash
 # 1. Build Python sidecar
-cd backend && .venv/bin/pyinstaller autoqa-backend.spec --noconfirm
-# Output: backend/dist/autoqa-backend
+cd backend && .venv/bin/pyinstaller clariti-backend.spec --noconfirm
+# Output: backend/dist/clariti-backend
 
 # 2. Build Electron DMG
 cd frontend && npm run build
-# Output: frontend/release/AutoQA-1.0.0-arm64.dmg
+# Output: frontend/release/Clariti-1.0.0-arm64.dmg
 ```
 
 ---
@@ -943,13 +943,13 @@ cd frontend && npm run build
 
 ## Anthropic API Key Management
 
-AutoQA uses Claude for test execution. The API key is provided by the user and stored securely on their machine.
+Clariti uses Claude for test execution. The API key is provided by the user and stored securely on their machine.
 
 ### Storage: Electron `safeStorage` (OS Keychain)
 
 Keys are encrypted using the OS-level keychain (macOS Keychain, Windows DPAPI) via Electron's `safeStorage` API. The encrypted bytes are written to a file in the user's app data directory — never stored in plaintext, never sent to any server.
 
-**File location:** `~/Library/Application Support/autoqa-desktop/anthropic-key.bin`
+**File location:** `~/Library/Application Support/clariti-desktop/anthropic-key.bin`
 
 ### IPC Handlers (`electron/main.ts`)
 
@@ -985,7 +985,7 @@ The local backend uses it to initialise `ClaudeComputerUseAgent` with the user's
 | Screen Recording | `mss` window capture, `CGWindowListCopyWindowInfo` | System Settings → Privacy → Screen Recording |
 | Accessibility | `pyautogui` clicks/keyboard | System Settings → Privacy → Accessibility |
 
-**Important:** macOS TCC attributes permissions to the **calling process**. `autoqa-backend` (the PyInstaller binary) needs its own TCC entries — it does NOT inherit AutoQA.app's grants.
+**Important:** macOS TCC attributes permissions to the **calling process**. `clariti-backend` (the PyInstaller binary) needs its own TCC entries — it does NOT inherit Clariti.app's grants.
 
 **Permission functions in `backend/windows.py`:**
 

@@ -54,7 +54,7 @@ export function OnboardingModal({ open }: { open: boolean }) {
           <DialogHeader>
             <DialogTitle className="text-base font-semibold">Add your API key</DialogTitle>
             <DialogDescription className="text-sm text-muted-foreground mt-1">
-              AutoQA uses Claude to generate and execute test cases. Your key is stored encrypted in
+              Clariti uses Claude to generate and execute test cases. Your key is stored encrypted in
               your OS keychain.
             </DialogDescription>
           </DialogHeader>

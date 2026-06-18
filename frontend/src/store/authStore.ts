@@ -28,7 +28,7 @@ export const useAuthStore = create<AuthState>()(
       clearAuth: () => set({ token: null, user: null, skipped: false }),
     }),
     {
-      name: 'autoqa-auth',
+      name: 'clariti-auth',
       partialize: (state) => ({ token: state.token, user: state.user, skipped: state.skipped }),
     }
   )

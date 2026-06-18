@@ -20,7 +20,17 @@ export default function Hero() {
     e.preventDefault();
     if (!email) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
+    try {
+      const apiUrl = import.meta.env.PUBLIC_API_URL ?? '';
+      console.log('apiUrl', apiUrl);
+      await fetch(`${apiUrl}/api/v1/waitlist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+    } catch {
+      // Fail silently — still show success to the user
+    }
     setSubmitted(true);
     setLoading(false);
   }
@@ -30,11 +40,11 @@ export default function Hero() {
       <Aurora />
 
       {/* Hero */}
-      <main className="relative z-10 flex flex-1 items-center justify-center px-6 pb-24 pt-4">
+      <main className="relative z-10 flex flex-1 items-center justify-center px-6 pb-10 pt-4 sm:pb-20">
         <div className="text-center max-w-4xl mx-auto">
 
           {/* ── Main hero word ── */}
-          <h1 className="text-[clamp(3.5rem,10vw,6.5rem)] font-black tracking-[-0.04em] leading-[0.95] text-white">
+          <h1 className="text-[clamp(3rem,10vw,6.5rem)] font-black tracking-[-0.04em] leading-[0.95] text-white">
             <BlurText
               text="Clariti"
               startDelay={150}
@@ -44,7 +54,7 @@ export default function Hero() {
           </h1>
 
           {/* ── Full tagline, one continuous sentence ── */}
-          <p className="mt-6 text-xl sm:text-2xl md:text-3xl font-semibold leading-snug tracking-tight text-white/70">
+          <p className="mt-3 sm:mt-5 text-lg sm:text-2xl md:text-3xl font-semibold leading-snug tracking-tight text-white/70">
             <BlurText
               text={TAGLINE}
               startDelay={TAGLINE_START}
@@ -53,28 +63,43 @@ export default function Hero() {
             />
           </p>
 
-          {/* ── Genuine thesis ── */}
+          {/* ── Thesis label ── */}
           <p
-            className="animate-fade-up mt-8 text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
-            style={{ animationDelay: `${BODY_DELAY}ms` }}
+            className="animate-fade-up mt-5 sm:mt-8 inline-block font-handwriting font-semibold text-2xl sm:text-3xl text-white/90 animate-draw-underline"
+            style={{
+              animationDelay: `${BODY_DELAY}ms`,
+              '--underline-delay': `${BODY_DELAY + 600}ms`,
+            } as React.CSSProperties}
           >
-            Our thesis is simple: True end-to-end testing shouldn't require writing code,
-            it's a bottleneck. The most effective way to test software is to
-            replicate how a human QA works—seeing the interface, reasoning through
-            flows, and evaluating outcomes.
+            Our Thesis
           </p>
+
+          {/* ── Thesis heading ── */}
+          <h2
+            className="animate-fade-up mt-2 text-base sm:text-lg md:text-xl font-bold text-white max-w-2xl mx-auto leading-snug"
+            style={{ animationDelay: `${BODY_DELAY + 100}ms` }}
+          >
+            True end-to-end testing shouldn't require writing code — it's a bottleneck.
+          </h2>
+
+          {/* ── Thesis body ── */}
           <p
-            className="animate-fade-up mt-4 text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
+            className="animate-fade-up mt-2 sm:mt-3 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
             style={{ animationDelay: `${BODY_DELAY + 150}ms` }}
           >
-            This approach is naturally platform-agnostic, better at catching UI
-            issues that code-based tests miss, and far more resilient in dynamic
-            applications where hard-coded tests inevitably become brittle.
+            The most effective way to test software is to replicate how a human QA
+            works—seeing the interface, reasoning through flows, and evaluating outcomes.
+          </p>
+          <p
+            className="animate-fade-up mt-2 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
+            style={{ animationDelay: `${BODY_DELAY + 300}ms` }}
+          >
+          Naturally platform-agnostic, capable of detecting UI issues code-based tests miss, and built to handle rapidly evolving applications.
           </p>
 
           {/* ── CTA bridge ── */}
           <p
-            className="animate-fade-up mt-10 text-sm text-white/55 max-w-md mx-auto"
+            className="animate-fade-up mt-5 sm:mt-8 text-sm text-white/55 max-w-md mx-auto"
             style={{ animationDelay: `${CTA_DELAY - 150}ms` }}
           >
             Sounds interesting? We're launching soon. Leave your email below and
@@ -83,7 +108,7 @@ export default function Hero() {
 
           {/* ── CTA ── */}
           <div
-            className="animate-fade-up mt-10 flex flex-col sm:flex-row gap-3 max-w-md mx-auto"
+            className="animate-fade-up mt-4 sm:mt-6 flex flex-col sm:flex-row gap-3 max-w-md mx-auto"
             style={{ animationDelay: `${CTA_DELAY}ms` }}
           >
             {submitted ? (
@@ -94,21 +119,21 @@ export default function Hero() {
                 You're on the list — we'll be in touch!
               </div>
             ) : (
-              <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 w-full">
+              <form onSubmit={handleSubmit} className="flex flex-col items-center sm:flex-row gap-3 w-full">
                 <input
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="your@email.com"
-                  className="flex-1 rounded-xl bg-white/[0.06] border border-white/[0.12] px-4 py-3 text-sm text-white placeholder:text-white/30 outline-none focus:border-indigo-500/60 focus:bg-white/[0.09] transition-all"
+                  className="flex-1 w-full sm:w-auto rounded-xl bg-white/[0.06] border border-white/[0.12] px-4 py-3 text-sm text-white placeholder:text-white/30 outline-none focus:border-indigo-500/60 focus:bg-white/[0.09] transition-all"
                 />
                 <button
                   type="submit"
                   disabled={loading}
-                  className="shrink-0 rounded-xl bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60 cursor-pointer"
+                  className="shrink-0 w-[70%] sm:w-auto rounded-xl bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60 cursor-pointer"
                 >
-                  {loading ? 'Saving…' : 'Notify Me at Launch'}
+                  {loading ? 'Saving…' : 'Notify Me'}
                 </button>
               </form>
             )}

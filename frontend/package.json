@@ -1,7 +1,7 @@
 {
-  "name": "autoqa-desktop",
+  "name": "clariti-desktop",
   "version": "1.0.0",
-  "description": "AutoQA - Visual QA Agent Desktop App",
+  "description": "Clariti - Visual QA Agent Desktop App",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -57,15 +57,15 @@
     "wait-on": "^7.0.1"
   },
   "build": {
-    "appId": "com.autoqa.desktop",
-    "productName": "AutoQA",
+    "appId": "com.clariti.desktop",
+    "productName": "Clariti",
     "directories": {
       "output": "release"
     },
     "extraResources": [
       {
-        "from": "../backend/dist/autoqa-backend",
-        "to": "backend/autoqa-backend"
+        "from": "../backend/dist/clariti-backend",
+        "to": "backend/clariti-backend"
       }
     ],
     "asarUnpack": [
