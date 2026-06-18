@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+/* ── Aurora blob animations ── */
+@keyframes aurora-float-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%       { transform: translate(40px, -50px) scale(1.06); }
+  66%       { transform: translate(-25px, 30px) scale(0.96); }
+}
+
+@keyframes aurora-float-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%       { transform: translate(-50px, 30px) scale(0.94); }
+  66%       { transform: translate(30px, -40px) scale(1.04); }
+}
+
+@keyframes aurora-float-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40%       { transform: translate(20px, 40px) scale(1.08); }
+  70%       { transform: translate(-30px, -20px) scale(0.93); }
+}
+
+/* ── Text animations ── */
+@keyframes blur-in {
+  from {
+    filter: blur(14px);
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Utility classes ── */
+@layer utilities {
+  .animate-blur-in {
+    animation: blur-in var(--blur-duration, 0.7s) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    opacity: 0;
+  }
+
+  .animate-fade-up {
+    animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    opacity: 0;
+  }
+
+  .aurora-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  .aurora-blob-1 {
+    width: 700px;
+    height: 700px;
+    background: radial-gradient(circle at center, #6366f1 0%, transparent 70%);
+    top: -180px;
+    left: -80px;
+    animation: aurora-float-1 12s ease-in-out infinite;
+  }
+
+  .aurora-blob-2 {
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle at center, #8b5cf6 0%, transparent 70%);
+    top: 30%;
+    right: -100px;
+    animation: aurora-float-2 15s ease-in-out infinite;
+    animation-delay: -4s;
+  }
+
+  .aurora-blob-3 {
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle at center, #3b82f6 0%, transparent 70%);
+    bottom: -80px;
+    left: 35%;
+    animation: aurora-float-3 10s ease-in-out infinite;
+    animation-delay: -7s;
+  }
+}
