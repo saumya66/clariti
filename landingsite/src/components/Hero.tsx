@@ -131,7 +131,7 @@ export default function Hero() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="shrink-0 w-[70%] sm:w-auto rounded-xl bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60 cursor-pointer"
+                  className="shrink-0 w-[40%] sm:w-auto rounded-2xl bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60 cursor-pointer"
                 >
                   {loading ? 'Saving…' : 'Notify Me'}
                 </button>
