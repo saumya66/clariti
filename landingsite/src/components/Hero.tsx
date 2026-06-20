@@ -94,7 +94,7 @@ export default function Hero() {
             className="animate-fade-up mt-2 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
             style={{ animationDelay: `${BODY_DELAY + 300}ms` }}
           >
-          Naturally platform-agnostic, capable of detecting UI issues code-based tests miss, and built to handle rapidly evolving applications.
+          Such a platform would be naturally platform-agnostic, capable of detecting UI issues that code-based tests miss, and it'll be to able to handle rapidly evolving applications.
           </p>
 
           {/* ── CTA bridge ── */}
