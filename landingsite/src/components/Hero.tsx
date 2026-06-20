@@ -88,7 +88,7 @@ export default function Hero() {
             style={{ animationDelay: `${BODY_DELAY + 150}ms` }}
           >
             The most effective way to test software is to replicate how a human QA
-            works—seeing the interface, reasoning through flows, and evaluating outcomes.
+            works—seeing the interface, taking input from devs, acting, reasoning through flows, and evaluating outcomes.
           </p>
           <p
             className="animate-fade-up mt-2 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
