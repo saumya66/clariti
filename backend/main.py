@@ -41,7 +41,7 @@ from context_builder import get_context_builder
 from models.context import ContextType
 from agents import VisionAgent, PlannerAgent, WindowResolverAgent, OrchestratorAgent, ImageContextRetrieverAgent, TestPlannerAgent
 from agents.computer_use_agent import ComputerUseAgent
-from agents.claude_computer_use_agent import ClaudeComputerUseAgent
+from agents.claude_computer_use_agent import ClaudeComputerUseAgent, BATCHING_INSTRUCTIONS
 from agents.orchestrator_agent import ActionType as OrchestratorActionType
 from agents.vision_agent import calculate_screen_coordinates
 from agents.planner_agent import ActionType as PlanActionType
@@ -2766,6 +2766,7 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
                     "immediately update your current plan and follow the instruction exactly, "
                     "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
                     "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+                    + BATCHING_INSTRUCTIONS
                 )
                 print(f"[DEBUG] System prompt ready — total length: {len(cu_system_prompt)} chars")
                 print(f"[DEBUG]   project_ctx={'✓' if project_context_str else '✗'}  feature_ctx={'✓' if feature_context_str else '✗'}")
@@ -2871,6 +2872,10 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         break
 
                     tool_use_ids: list[str] = []
+
+                    action_count = len(cu_response.actions)
+                    action_names = [a.action for a in cu_response.actions]
+                    print(f"[EXECUTE-CU] Turn {turn + 1}: Claude returned {action_count} action(s) → {action_names}")
 
                     for action in cu_response.actions:
                         step_num += 1

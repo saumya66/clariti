@@ -302,17 +302,23 @@ Local Backend (/feature/{featureId}/execute  →  execute_tests_stream generator
     c. Check abort_flags[context_id]  →  break if set
     d. Initialise ClaudeComputerUseAgent(system_prompt=cu_system_prompt)
     e. agent.start(goal, screenshot)  →  first action
-    f. STEP LOOP:
-       - await asyncio.to_thread(agent.step, tool_use_ids, screenshot)
-       - Execute action via pyautogui (wrapped in asyncio.to_thread)
-       - Build StepRecord dict: { step_number, action, type, description, target, value,
-                                  reasoning, success, coordinates, confidence, error, timestamp }
-       - SSE: { event: "step", ...StepRecord }   ← same shape as what's stored in DB
-       - asyncio.create_task → append StepRecord to cloud TestResult (non-blocking)
-       - Check pause_flags[context_id]:
+    f. TURN LOOP (max 30 turns, each turn = 1 API call):
+       - Log: "[EXECUTE-CU] Turn N: Claude returned X action(s) → [action names]"
+         (used to verify multi-action batching in terminal output)
+       - FOR EACH action in cu_response.actions (may be 1 or many):
+           · Execute action via pyautogui (wrapped in asyncio.to_thread)
+           · Build StepRecord dict: { step_number, action, type, description, target, value,
+                                      reasoning, success, coordinates, confidence, error, timestamp }
+           · SSE: { event: "step", ...StepRecord }   ← same shape as what's stored in DB
+           · asyncio.create_task → append StepRecord to cloud TestResult (non-blocking)
+           · collect tool_use_id into tool_use_ids[]
+       - Check pause_flags[context_id] after all actions in this turn:
            → If set: SSE { event: "paused" }
                      await asyncio.Event (pause_resume_events[context_id])
                      inject any pause_guidance via agent.inject_guidance()
+       - sleep(1.0) — wait for UI to settle
+       - capture_window() → fresh screenshot
+       - agent.step(tool_use_ids, screenshot) → next response  ← 1 API call for all N actions
        - Check abort_flags[context_id]  →  break if set
        - If is_done: break
     g. SSE: { event: "test_complete", test_id, status, conclusion }
@@ -555,13 +561,24 @@ Production execution agent. Uses Anthropic's native Computer Use beta to control
 **Key behaviours:**
 - Accepts an optional `system_prompt` at init (the rich `cu_system_prompt` built from project + feature context)
 - `start(goal, screenshot_bytes)` — begins a task, returns `ClaudeCUResponse`
-- `step(tool_use_ids, screenshot_bytes)` — continues after executing actions
+- `step(tool_use_ids, screenshot_bytes)` — continues after executing actions; accepts a list of `tool_use_id`s (one per action in the previous response) and sends them all back with the same final screenshot
 - `inject_guidance(text)` — queues operator guidance to be sent in the next `step()` call as a top-level user message text block
 - Runs synchronous Anthropic API calls via `await asyncio.to_thread()` to avoid blocking the FastAPI event loop (critical for pause/abort to work)
 
 **Default model:** `claude-haiku-4-5`
 **Beta flag:** `computer-use-2025-01-24`
 **Tool version:** `computer_20250124`
+
+**Multi-action batching (`BATCHING_INSTRUCTIONS` constant):**
+
+A module-level constant `BATCHING_INSTRUCTIONS` is defined in this file and appended to both `DEFAULT_SYSTEM_PROMPT` (fallback) and the runtime-built `cu_system_prompt` in `main.py`. It instructs Claude to:
+- Pack multiple confident actions into one response (e.g. click field + type + press Enter = 1 API call instead of 3)
+- Return only 1 action when the next step depends on visual feedback (navigation, form submit, modal trigger)
+- Use the native `screenshot` action for an explicit mid-sequence visual checkpoint
+
+The execution loop in `main.py` already handles N actions per turn — it iterates `cu_response.actions`, executes each, collects all `tool_use_id`s, then calls `agent.step(all_ids, one_screenshot)` once. **No loop code changes were needed; only the prompt changes.**
+
+Each action in a batch still gets its own individual `StepRecord` in the DB (own `step_number`, `timestamp`, `success`, `error`). All actions in the same turn share the same `reasoning`/`description` text since that comes from `cu_response.thinking` (per-turn, not per-action).
 
 ---
 
@@ -975,6 +992,15 @@ The Anthropic key is passed in the request body to `POST /feature/{id}/execute`:
 ```
 
 The local backend uses it to initialise `ClaudeComputerUseAgent` with the user's own key. The key is never forwarded to the cloud backend.
+
+### Dev Mode (browser) vs Electron App — Key Difference
+
+| Mode | How key is stored | How key reaches backend |
+|------|------------------|------------------------|
+| **Electron app (DMG)** | OS keychain via `safeStorage` IPC | `keyStore` hydrated from IPC → passed in execute request body |
+| **Local dev (browser at localhost:5173)** | `window.electronAPI` does not exist | Settings page IPC calls fail silently → `anthropic_api_key` in request is `null` → backend falls back to `ANTHROPIC_API_KEY` env var |
+
+**In local dev mode, `ANTHROPIC_API_KEY` must be set (uncommented) in `backend/.env`.** If it is commented out, the `ClaudeComputerUseAgent` constructor raises `ValueError: ANTHROPIC_API_KEY not found`, which is caught silently (yielded as an SSE error event, not printed to terminal), causing every test to fail instantly with no visible backend log output.
 
 ---
 

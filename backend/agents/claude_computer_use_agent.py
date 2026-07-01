@@ -20,6 +20,28 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 TOOL_VERSION = "computer_20250124"
 BETA_FLAG = "computer-use-2025-01-24"
 
+BATCHING_INSTRUCTIONS = (
+    "\n\nMULTI-ACTION BATCHING — CRITICAL FOR PERFORMANCE:\n"
+    "After ALL actions in your response are executed, you automatically receive ONE "
+    "screenshot showing the final state. You do NOT get a screenshot between individual "
+    "actions in the same response.\n\n"
+    "PACK MULTIPLE ACTIONS INTO ONE RESPONSE — but ONLY when you are confident you "
+    "know the exact next steps from the current screenshot without needing to see "
+    "intermediate UI state. Examples of safe batches:\n"
+    "- Click a field + type text + press Tab or Enter (3 actions, 1 turn)\n"
+    "- Clear and retype a field: triple_click → type new value (2 actions, 1 turn)\n"
+    "- Sequential keyboard shortcuts: Cmd+A → Backspace → type (3 actions, 1 turn)\n"
+    "- Fill multiple form fields whose positions you can already see in the current screenshot\n\n"
+    "RETURN ONLY 1 ACTION and wait for a fresh screenshot when:\n"
+    "- You are not fully confident what the next step will be after this action\n"
+    "- The action will change the page or open a modal (navigation, form submit, dialog trigger)\n"
+    "- You are not certain the next target element is already visible on screen\n"
+    "- You have already included 5 or more actions in this response\n\n"
+    "You may also use the `screenshot` action explicitly at the end of a batch "
+    "if you want a visual checkpoint without taking another action first.\n\n"
+    "Returning one action per response when the entire sequence is already obvious is wasteful and slow."
+)
+
 
 @dataclass
 class ClaudeCUAction:
@@ -93,6 +115,7 @@ class ClaudeComputerUseAgent:
         "immediately update your current plan and follow the instruction exactly, "
         "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
         "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+        + BATCHING_INSTRUCTIONS
     )
 
     def __init__(
