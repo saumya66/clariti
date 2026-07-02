@@ -1,8 +1,36 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav';
 import Hero from '../components/Hero';
+import ProblemSection from '../components/ProblemSection';
+import Manifesto from '../components/Manifesto';
+import AgenticLoop from '../components/AgenticLoop';
+import Pillars from '../components/Pillars';
+import HowItWorks from '../components/HowItWorks';
+import PlatformAgnostic from '../components/PlatformAgnostic';
+import ExecutionExperience from '../components/ExecutionExperience';
+import LiveDemo from '../components/LiveDemo';
+import History from '../components/History';
+import WhyTeamsSwitch from '../components/WhyTeamsSwitch';
+import FinalCTA from '../components/FinalCTA';
+import Footer from '../components/Footer';
 ---
 
 <BaseLayout>
-  <Hero client:load />
+  <Nav client:load />
+  <main>
+    <Hero client:load />
+    <ProblemSection client:visible />
+    <Manifesto client:visible />
+    <AgenticLoop client:visible />
+    <Pillars client:visible />
+    <HowItWorks client:visible />
+    <PlatformAgnostic client:visible />
+    <ExecutionExperience client:visible />
+    <LiveDemo client:visible />
+    <History client:visible />
+    <WhyTeamsSwitch client:visible />
+    <FinalCTA client:visible />
+  </main>
+  <Footer client:visible />
 </BaseLayout>
