@@ -1,129 +1,152 @@
-import { motion } from 'motion/react';
+import { useState } from 'react';
 import Aurora from './Aurora';
-import { BookDemoButton, WatchDemoButton } from './CTAButtons';
-import { EyeIcon, SparkIcon, QuestionIcon, GavelIcon } from './Icons';
+import BlurText from './BlurText';
 
-const VERBS = [
-  { word: 'Sees', Icon: EyeIcon },
-  { word: 'Thinks', Icon: SparkIcon },
-  { word: 'Asks', Icon: QuestionIcon },
-  { word: 'Judges', Icon: GavelIcon },
-];
+const TAGLINE = 'It Sees. It Thinks. It Acts. It Judges. Just like your QA would.';
 
-const FLOAT_NODES: { label: string; cls: string; dur: number }[] = [
-  { label: 'See', cls: 'left-[10%] top-[30%]', dur: 7 },
-  { label: 'Think', cls: 'right-[9%] top-[26%]', dur: 8 },
-  { label: 'Ask', cls: 'left-[14%] bottom-[24%]', dur: 9 },
-  { label: 'Judge', cls: 'right-[12%] bottom-[28%]', dur: 7.5 },
-];
+// ── Timing ─────────────────────────────────────────────────────────────────
+const CLARITI_DURATION  = 1000;   // ms the "Clariti" blur-in takes
+const TAGLINE_START     = 800;    // starts slightly before Clariti finishes
+const TAGLINE_DONE      = TAGLINE_START + TAGLINE.split(' ').length * 75;
+const BODY_DELAY        = TAGLINE_DONE + 250;
+const CTA_DELAY         = BODY_DELAY + 500;
 
 export default function Hero() {
+  const [email, setEmail]         = useState('');
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading]     = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email) return;
+    setLoading(true);
+    try {
+      const apiUrl = import.meta.env.PUBLIC_API_URL ?? '';
+      console.log('apiUrl', apiUrl);
+      await fetch(`${apiUrl}/api/v1/waitlist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+    } catch {
+      // Fail silently — still show success to the user
+    }
+    setSubmitted(true);
+    setLoading(false);
+  }
+
   return (
-    <section id="top" className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-28 pb-20">
+    <div className="relative min-h-screen flex flex-col bg-[#09090b] overflow-hidden">
       <Aurora />
-      <div className="absolute inset-0 bg-grid bg-grid-fade" aria-hidden="true" />
-      <div
-        className="absolute left-1/2 top-1/3 h-[520px] w-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(168,85,247,0.16), transparent 65%)' }}
-        aria-hidden="true"
-      />
 
-      {/* Floating loop-node labels (decorative) */}
-      <div className="pointer-events-none absolute inset-0 hidden lg:block" aria-hidden="true">
-        {FLOAT_NODES.map((n, i) => (
-          <motion.span
-            key={n.label}
-            className={`absolute rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 font-mono text-[11px] text-white/40 backdrop-blur-sm ${n.cls}`}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1, y: [0, -12, 0] }}
-            transition={{
-              opacity: { delay: 1.9 + i * 0.15, duration: 0.8 },
-              y: { duration: n.dur, repeat: Infinity, ease: 'easeInOut' },
-            }}
+      {/* Hero */}
+      <main className="relative z-10 flex flex-1 items-center justify-center px-6 pb-10 pt-4 sm:pb-20">
+        <div className="text-center max-w-4xl mx-auto">
+
+          {/* ── Main hero word ── */}
+          <h1 className="text-[clamp(3rem,10vw,6.5rem)] font-black tracking-[-0.04em] leading-[0.95] text-white">
+            <BlurText
+              text="Clariti"
+              startDelay={150}
+              wordDelay={0}
+              duration={CLARITI_DURATION / 1000}
+            />
+          </h1>
+
+          {/* ── Full tagline, one continuous sentence ── */}
+          <p className="mt-3 sm:mt-5 text-lg sm:text-2xl md:text-3xl font-semibold leading-snug tracking-tight text-white/70">
+            <BlurText
+              text={TAGLINE}
+              startDelay={TAGLINE_START}
+              wordDelay={75}
+              duration={0.55}
+            />
+          </p>
+
+          {/* ── Thesis label ── */}
+          <p
+            className="animate-fade-up mt-5 sm:mt-8 inline-block font-handwriting font-semibold text-2xl sm:text-3xl text-white/90 animate-draw-underline"
+            style={{
+              animationDelay: `${BODY_DELAY}ms`,
+              '--underline-delay': `${BODY_DELAY + 600}ms`,
+            } as React.CSSProperties}
           >
-            {n.label}
-          </motion.span>
-        ))}
-      </div>
+            Our Thesis
+          </p>
 
-      <div className="relative z-10 mx-auto max-w-4xl text-center">
-        {/* Eyebrow */}
-        <motion.p
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5 text-sm text-white/60"
-        >
-          <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse-soft" />
-          The autonomous QA agent
-        </motion.p>
-
-        {/* Headline — four verbs animate in */}
-        <h1 className="font-sans text-[clamp(2.4rem,7.5vw,5.25rem)] font-extrabold leading-[0.98] tracking-[-0.03em] text-white">
-          <span className="flex flex-wrap items-center justify-center gap-x-[0.35em] gap-y-1">
-            {VERBS.map(({ word, Icon }, i) => (
-              <motion.span
-                key={word}
-                initial={{ opacity: 0, filter: 'blur(14px)', y: 12 }}
-                animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
-                transition={{ duration: 0.7, delay: 0.15 + i * 0.28, ease: [0.16, 1, 0.3, 1] }}
-                className="inline-flex items-center gap-[0.2em] whitespace-nowrap"
-              >
-                <span className="text-white/25">It</span>
-                <span className="text-gradient">{word}.</span>
-                {i < 3 && (
-                  <Icon className="h-[0.5em] w-[0.5em] shrink-0 text-violet-400/70" strokeWidth={2} />
-                )}
-              </motion.span>
-            ))}
-          </span>
-          <motion.span
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.15 + 4 * 0.28, ease: [0.16, 1, 0.3, 1] }}
-            className="mt-2 block text-white"
+          {/* ── Thesis heading ── */}
+          <h2
+            className="animate-fade-up mt-2 text-base sm:text-lg md:text-xl font-bold text-white max-w-2xl mx-auto leading-snug"
+            style={{ animationDelay: `${BODY_DELAY + 100}ms` }}
           >
-            Just like your QA would.
-          </motion.span>
-        </h1>
+            True end-to-end testing shouldn't require writing code — it's a bottleneck.
+          </h2>
 
-        {/* Sub */}
-        <motion.p
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 1.5, ease: [0.16, 1, 0.3, 1] }}
-          className="mx-auto mt-7 max-w-2xl text-base leading-relaxed text-white/55 sm:text-lg"
-        >
-          Clariti tests your product the way a person does — it opens your app, works through
-          every flow, notices what looks wrong, and tells you what broke.{' '}
-          <span className="text-white/75">No test scripts. No selectors. No QA backlog.</span>
-        </motion.p>
+          {/* ── Thesis body ── */}
+          <p
+            className="animate-fade-up mt-2 sm:mt-3 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
+            style={{ animationDelay: `${BODY_DELAY + 150}ms` }}
+          >
+            The most effective way to test software is to replicate how a human QA
+            works—seeing the interface, taking input from devs, acting, reasoning through flows, and evaluating outcomes.
+          </p>
+          <p
+            className="animate-fade-up mt-2 text-sm sm:text-base md:text-lg text-white/40 max-w-2xl mx-auto leading-relaxed"
+            style={{ animationDelay: `${BODY_DELAY + 300}ms` }}
+          >
+          Such a platform would be naturally platform-agnostic, capable of detecting UI issues that code-based tests miss, and it'll be to able to handle rapidly evolving applications.
+          </p>
 
-        {/* CTAs */}
-        <motion.div
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 1.75, ease: [0.16, 1, 0.3, 1] }}
-          className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row"
-        >
-          <BookDemoButton size="lg" className="w-full sm:w-auto" />
-          <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" />
-        </motion.div>
-      </div>
+          {/* ── CTA bridge ── */}
+          <p
+            className="animate-fade-up mt-5 sm:mt-8 text-sm text-white/55 max-w-md mx-auto"
+            style={{ animationDelay: `${CTA_DELAY - 150}ms` }}
+          >
+            Sounds interesting? We're launching soon. Leave your email below and
+            we'll let you know when we're ready!
+          </p>
 
-      {/* Scroll cue */}
-      <motion.a
-        href="#problem"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 2.2, duration: 0.8 }}
-        className="absolute bottom-8 left-1/2 -translate-x-1/2 font-mono text-xs tracking-widest text-white/30 transition-colors hover:text-white/60"
-      >
-        <span className="flex flex-col items-center gap-2">
-          <span className="inline-block animate-bounce">↓</span>
-          SCROLL
-        </span>
-      </motion.a>
-    </section>
+          {/* ── CTA ── */}
+          <div
+            className="animate-fade-up mt-4 sm:mt-6 flex flex-col sm:flex-row gap-3 max-w-md mx-auto"
+            style={{ animationDelay: `${CTA_DELAY}ms` }}
+          >
+            {submitted ? (
+              <div className="flex-1 flex items-center justify-center gap-2 rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-6 py-3 text-indigo-300 text-sm font-medium">
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                You're on the list — we'll be in touch!
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} className="flex flex-col items-center sm:flex-row gap-3 w-full">
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  className="flex-1 w-full sm:w-auto rounded-xl bg-white/[0.06] border border-white/[0.12] px-4 py-3 text-sm text-white placeholder:text-white/30 outline-none focus:border-indigo-500/60 focus:bg-white/[0.09] transition-all"
+                />
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="shrink-0 w-[40%] sm:w-auto rounded-2xl bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60 cursor-pointer"
+                >
+                  {loading ? 'Saving…' : 'Notify Me'}
+                </button>
+              </form>
+            )}
+          </div>
+
+          <p
+            className="animate-fade-up mt-4 text-xs text-white/20"
+            style={{ animationDelay: `${CTA_DELAY + 200}ms` }}
+          >
+            No spam. Just a launch notification.
+          </p>
+        </div>
+      </main>
+    </div>
   );
 }

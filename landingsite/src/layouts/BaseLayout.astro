@@ -8,8 +8,8 @@ interface Props {
 }
 
 const {
-  title = 'Clariti — QA that thinks.',
-  description = 'Clariti is an autonomous QA agent. It sees your app, thinks about what to test, asks when it is unsure, and judges the result — just like your QA would. No test scripts. No selectors. No QA backlog.',
+  title = 'Clariti',
+  description = 'Clariti is an AI-native QA agent that sees your app, understands it, and runs tests autonomously. It Sees. It Thinks. It Acts. It Judges.',
   ogImage = '/og-image.png',
 } = Astro.props;
 
@@ -38,7 +38,7 @@ const jsonLd = JSON.stringify({
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0a0a0f" />
+    <meta name="theme-color" content="#09090b" />
 
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -66,18 +66,10 @@ const jsonLd = JSON.stringify({
     <!-- Structured Data -->
     <script type="application/ld+json" set:html={jsonLd} />
 
-    <!-- Fonts: Google Sans Flex (primary) + JetBrains Mono (terminal UI) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,1..1000&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-
     <!-- Favicon -->
-    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.png" />
   </head>
-  <body class="bg-[#0a0a0f] antialiased">
+  <body class="bg-[#09090b] antialiased">
     <slot />
   </body>
 </html>
