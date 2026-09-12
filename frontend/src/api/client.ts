@@ -218,6 +218,7 @@ export interface Project {
   name: string;
   description?: string | null;
   context_summary?: string | null;
+  source_memory?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -226,12 +227,14 @@ export interface ProjectCreateInput {
   name: string;
   description?: string;
   context_summary?: string;
+  source_memory?: string;
 }
 
 export interface ProjectUpdateInput {
   name?: string;
   description?: string;
   context_summary?: string;
+  source_memory?: string | null;
 }
 
 // =============================================================================
@@ -712,6 +715,7 @@ export async function updateTestCase(
 
 export interface ExecuteTestsRequest {
   window_title: string;
+  execution_id: string;
   test_ids?: string[];
   provider?: CUProvider;
   cloud_feature_id?: string;
@@ -723,6 +727,7 @@ export interface ExecuteTestsRequest {
 export interface TestSuiteStartEvent {
   event: 'suite_start';
   context_id: string;
+  execution_id: string;
   window: string;
   total_tests: number;
 }
@@ -797,6 +802,21 @@ export interface TestSkipEvent {
   reason: string;
 }
 
+export interface ContextLearningEvent {
+  event: 'context_learning';
+}
+
+export interface ContextLearnedEvent {
+  event: 'context_learned';
+  updated: boolean;
+  change_summary?: string;
+}
+
+export interface ContextLearningWarningEvent {
+  event: 'context_learning_warning';
+  message: string;
+}
+
 export interface AbortedEvent {
   event: 'aborted';
   test_id: string;
@@ -811,7 +831,10 @@ export type TestExecutionEvent =
   | AbortedEvent
   | TestCompleteEvent
   | SuiteCompleteEvent
-  | TestSkipEvent;
+  | TestSkipEvent
+  | ContextLearningEvent
+  | ContextLearnedEvent
+  | ContextLearningWarningEvent;
 
 export interface ExecutionCallbacks {
   onSuiteStart?: (data: TestSuiteStartEvent) => void;
@@ -823,6 +846,9 @@ export interface ExecutionCallbacks {
   onTestComplete?: (data: TestCompleteEvent) => void;
   onSuiteComplete?: (data: SuiteCompleteEvent) => void;
   onTestSkip?: (data: TestSkipEvent) => void;
+  onContextLearning?: (data: ContextLearningEvent) => void;
+  onContextLearned?: (data: ContextLearnedEvent) => void;
+  onContextLearningWarning?: (data: ContextLearningWarningEvent) => void;
   onError?: (message: string) => void;
 }
 
@@ -834,8 +860,13 @@ async function streamFetch(
   return fetch(`${baseUrl}${url}`, init);
 }
 
-export async function abortExecution(contextId: string): Promise<{ success: boolean; message: string }> {
-  const response = await apiClient.post(`/feature/${contextId}/execute/abort`);
+export async function abortExecution(
+  contextId: string,
+  executionId: string
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(`/feature/${contextId}/execute/abort`, {
+    execution_id: executionId,
+  });
   return response.data;
 }
 
@@ -905,6 +936,15 @@ export async function executeTestsStream(
                   break;
                 case 'test_skip':
                   callbacks.onTestSkip?.(event);
+                  break;
+                case 'context_learning':
+                  callbacks.onContextLearning?.(event);
+                  break;
+                case 'context_learned':
+                  callbacks.onContextLearned?.(event);
+                  break;
+                case 'context_learning_warning':
+                  callbacks.onContextLearningWarning?.(event);
                   break;
               }
             } catch (e) {
@@ -1166,6 +1206,7 @@ export async function createProjectWithContext(
   description: string | undefined,
   images: File[],
   texts: string[],
+  sourceMemory: string | undefined,
   callbacks: CloudProjectCallbacks
 ): Promise<void> {
   const token = useAuthStore.getState().token;
@@ -1182,6 +1223,7 @@ export async function createProjectWithContext(
     description,
     images: imagePayloads,
     texts,
+    source_memory: sourceMemory,
     token,
     anthropic_api_key: anthropicKey,
   });

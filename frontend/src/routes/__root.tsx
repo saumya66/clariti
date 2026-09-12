@@ -13,11 +13,15 @@ function RootLayout() {
   return (
     <>
     <div className="h-screen flex flex-col bg-background overflow-hidden">
-      {/* Full-screen login: no header */}
+      {/* Keep login content below the macOS traffic lights and provide a
+          dedicated draggable surface for the frameless title bar. */}
       {isLoginRoute ? (
-        <main className="flex-1 overflow-hidden">
-          <Outlet />
-        </main>
+        <>
+          <header className="drag-region h-6 shrink-0 bg-white" aria-hidden="true" />
+          <main className="flex min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </main>
+        </>
       ) : (
         <>
       {/* Header: title bar on /app, nav bar on other routes */}

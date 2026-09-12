@@ -97,6 +97,7 @@ export interface CreateProjectWithContextInput {
   description?: string;
   images: File[];
   texts: string[];
+  sourceMemory?: string;
 }
 
 /**
@@ -121,11 +122,15 @@ export function useCreateProjectWithContext() {
       input: CreateProjectWithContextInput;
       callbacks?: CloudProjectCallbacks;
     }) => {
-      const hasContext = input.images.length > 0 || input.texts.length > 0;
+      const hasContext = input.images.length > 0 || input.texts.length > 0 || !!input.sourceMemory?.trim();
 
       if (!hasContext) {
         // No assets — skip AI, go straight to cloud
-        return createProject({ name: input.name, description: input.description }).then(
+        return createProject({
+          name: input.name,
+          description: input.description,
+          source_memory: input.sourceMemory,
+        }).then(
           (project) => {
             callbacks?.onDone?.(project);
             return project;
@@ -139,6 +144,7 @@ export function useCreateProjectWithContext() {
           input.description,
           input.images,
           input.texts,
+          input.sourceMemory,
           {
             onProgress: callbacks?.onProgress,
             onDone: (project) => {
@@ -170,8 +176,9 @@ export function useUpdateProject() {
       projectId: string;
       input: ProjectUpdateInput;
     }) => updateProject(projectId, input),
-    onSuccess: () => {
+    onSuccess: (_project, variables) => {
       queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+      queryClient.invalidateQueries({ queryKey: projectQueryKey(variables.projectId) });
     },
   });
 }

@@ -8,9 +8,11 @@ Coordinates are in actual pixels (no normalization).
 
 import os
 import base64
+import json
+import math
 from io import BytesIO
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import anthropic
 from PIL import Image
@@ -19,6 +21,63 @@ from PIL import Image
 DEFAULT_MODEL = "claude-haiku-4-5"
 TOOL_VERSION = "computer_20250124"
 BETA_FLAG = "computer-use-2025-01-24"
+MAX_SCREENSHOT_LONG_EDGE = 1568
+MAX_SCREENSHOT_PIXELS = 1_150_000
+
+
+def _debug_messages_enabled() -> bool:
+    """Return whether sanitized Anthropic request logging is enabled."""
+    return os.getenv("CLAUDE_CU_DEBUG_MESSAGES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _sanitise_for_debug(value: Any) -> Any:
+    """Convert Anthropic payload objects to JSON-safe values and redact images."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(exclude_none=True)
+
+    if isinstance(value, dict):
+        is_base64_source = value.get("type") == "base64" and isinstance(
+            value.get("data"), str
+        )
+        sanitised = {}
+        for key, item in value.items():
+            if is_base64_source and key == "data":
+                encoded_chars = len(item)
+                padding = len(item) - len(item.rstrip("="))
+                approximate_bytes = max(0, encoded_chars * 3 // 4 - padding)
+                sanitised[key] = (
+                    f"<redacted base64 image: {encoded_chars} chars, "
+                    f"~{approximate_bytes} bytes>"
+                )
+            else:
+                sanitised[key] = _sanitise_for_debug(item)
+        return sanitised
+
+    if isinstance(value, (list, tuple)):
+        return [_sanitise_for_debug(item) for item in value]
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    return repr(value)
+
+
+def _count_images(value: Any) -> int:
+    """Count image content blocks in an Anthropic request payload."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(exclude_none=True)
+    if isinstance(value, dict):
+        return (1 if value.get("type") == "image" else 0) + sum(
+            _count_images(item) for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return sum(_count_images(item) for item in value)
+    return 0
 
 BATCHING_INSTRUCTIONS = (
     "\n\nMULTI-ACTION BATCHING — CRITICAL FOR PERFORMANCE:\n"
@@ -42,44 +101,22 @@ BATCHING_INSTRUCTIONS = (
     "Returning one action per response when the entire sequence is already obvious is wasteful and slow."
 )
 
-VISUAL_TARGETING_INSTRUCTIONS = (
-    "\n\nVISUAL TARGETING — REQUIRED FOR EVERY POINTER ACTION:\n"
-    "Before clicking, moving, or dragging, identify the exact visible target using "
-    "its label, icon, color, and surrounding layout. Treat fixed UI layers—sticky "
-    "headers, bottom bars, floating controls, dialogs, and overlays—as separate from "
-    "scrollable content beneath them. Choose a coordinate safely inside the target, "
-    "normally its visual center; never use its border, whitespace, or a neighboring "
-    "element. When the next action depends on visual feedback, return only this pointer "
-    "action and confirm the result from the next screenshot before reporting success."
-)
-
-FINAL_REPORTING_INSTRUCTIONS = (
-    "\n\nWHEN YOU HAVE FINISHED EXECUTING A TEST, respond with a concise text-only "
-    "EXECUTION SUMMARY using these exact sections:\n"
-    "TEST RESULT\n"
-    "EXECUTION SUMMARY\n"
-    "DIRECTLY OBSERVED APP FACTS\n"
-    "OPERATIONAL LEARNINGS\n"
-    "RUN-LOCAL STATE\n\n"
-    "Include only facts you visually observed. Describe navigation or action strategies "
-    "that worked, and mistakes that you corrected. Put temporary values such as current "
-    "prices, cart contents, login state, modal state, and offers under RUN-LOCAL STATE. "
-    "Do not claim an action succeeded merely because you attempted it."
-)
-
 
 @dataclass
 class ClaudeCUAction:
     """A single action from Claude's Computer Use."""
     tool_use_id: str
     action: str
+    model_coordinate: Optional[list[int]] = None
     coordinate: Optional[list[int]] = None
     text: Optional[str] = None
     keys: Optional[list[str]] = None
     scroll_direction: Optional[str] = None
     scroll_amount: Optional[int] = None
     button: Optional[str] = None
+    model_start_coordinate: Optional[list[int]] = None
     start_coordinate: Optional[list[int]] = None
+    model_end_coordinate: Optional[list[int]] = None
     end_coordinate: Optional[list[int]] = None
     duration: Optional[float] = None
 
@@ -93,13 +130,22 @@ class ClaudeCUResponse:
     is_done: bool = False
 
 
+def calculate_screenshot_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Return the largest API-safe screenshot size while preserving aspect ratio."""
+    long_edge_scale = MAX_SCREENSHOT_LONG_EDGE / max(width, height)
+    total_pixels_scale = math.sqrt(
+        MAX_SCREENSHOT_PIXELS / (width * height)
+    )
+    scale = min(1.0, long_edge_scale, total_pixels_scale)
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
 def resize_screenshot(screenshot_bytes: bytes, target_w: int, target_h: int) -> str:
     """
     Resize a screenshot to target dimensions and return as base64.
 
-    On Retina displays the raw screenshot is 2x the logical window size.
-    Resizing to the logical size means Claude's pixel coordinates map 1:1
-    to window-local coordinates — no scaling math needed.
+    The target dimensions are chosen once from the first raw screenshot and
+    remain stable for the Computer Use conversation.
     """
     img = Image.open(BytesIO(screenshot_bytes))
     if img.size != (target_w, target_h):
@@ -141,8 +187,6 @@ class ClaudeComputerUseAgent:
         "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
         "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
         + BATCHING_INSTRUCTIONS
-        + VISUAL_TARGETING_INSTRUCTIONS
-        + FINAL_REPORTING_INSTRUCTIONS
     )
 
     def __init__(
@@ -159,24 +203,56 @@ class ClaudeComputerUseAgent:
 
         self.client = anthropic.Anthropic(api_key=key)
         self.model = model
+        # Logical window dimensions used by pyautogui.
         self.display_width = display_width
         self.display_height = display_height
+        # Dimensions of the higher-resolution image Claude actually sees.
+        # These are configured from the first raw screenshot in start().
+        self.screenshot_width = display_width
+        self.screenshot_height = display_height
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         self.messages: list[dict] = []
         self._pending_guidance: Optional[str] = None
+        self.tools: list[dict] = []
+        self._api_call_count = 0
+
+    def _configure_screenshot_space(self, screenshot_bytes: bytes) -> None:
+        """Set the API-safe image dimensions and matching Computer Use surface."""
+        raw_width, raw_height = Image.open(BytesIO(screenshot_bytes)).size
+        self.screenshot_width, self.screenshot_height = (
+            calculate_screenshot_dimensions(raw_width, raw_height)
+        )
         self.tools = [
             {
                 "type": TOOL_VERSION,
                 "name": "computer",
-                "display_width_px": display_width,
-                "display_height_px": display_height,
+                "display_width_px": self.screenshot_width,
+                "display_height_px": self.screenshot_height,
             }
+        ]
+        print(
+            "[CLAUDE-CU] Screenshot spaces: "
+            f"raw={raw_width}x{raw_height}; "
+            f"sent={self.screenshot_width}x{self.screenshot_height}; "
+            f"logical={self.display_width}x{self.display_height}"
+        )
+
+    def _to_logical_coordinate(
+        self, coordinate: Optional[list[int]]
+    ) -> Optional[list[int]]:
+        """Map a coordinate from Claude's image space to window-local space."""
+        if coordinate is None:
+            return None
+        return [
+            round(coordinate[0] * self.display_width / self.screenshot_width),
+            round(coordinate[1] * self.display_height / self.screenshot_height),
         ]
 
     def start(self, goal: str, screenshot_bytes: bytes) -> ClaudeCUResponse:
         """Begin a new task with a goal and initial screenshot."""
+        self._configure_screenshot_space(screenshot_bytes)
         screenshot_b64 = resize_screenshot(
-            screenshot_bytes, self.display_width, self.display_height
+            screenshot_bytes, self.screenshot_width, self.screenshot_height
         )
 
         self.messages = [
@@ -218,7 +294,7 @@ class ClaudeComputerUseAgent:
         Claude treats it as a direct operator message.
         """
         screenshot_b64 = resize_screenshot(
-            screenshot_bytes, self.display_width, self.display_height
+            screenshot_bytes, self.screenshot_width, self.screenshot_height
         )
 
         pending_guidance = self._pending_guidance
@@ -257,6 +333,25 @@ class ClaudeComputerUseAgent:
 
     def _call(self) -> ClaudeCUResponse:
         """Call Claude and parse the response."""
+        self._api_call_count += 1
+        debug_messages = _debug_messages_enabled()
+        if debug_messages:
+            debug_request = {
+                "event": "anthropic_request",
+                "call": self._api_call_count,
+                "message_count": len(self.messages),
+                "roles": [message.get("role") for message in self.messages],
+                "image_count": _count_images(self.messages),
+                "system": _sanitise_for_debug(self.system_prompt),
+                "tools": _sanitise_for_debug(self.tools),
+                "messages": _sanitise_for_debug(self.messages),
+            }
+            print(
+                "[CLAUDE-CU-DEBUG] Sanitized request; text fields may contain "
+                "goals, typed values, or operator guidance.\n"
+                + json.dumps(debug_request, ensure_ascii=False, indent=2)
+            )
+
         response = self.client.beta.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -264,7 +359,27 @@ class ClaudeComputerUseAgent:
             tools=self.tools,
             messages=self.messages,
             betas=[BETA_FLAG],
+            cache_control={"type": "ephemeral"},
         )
+
+        if debug_messages:
+            usage = response.usage
+            debug_usage = {
+                "event": "anthropic_response_usage",
+                "call": self._api_call_count,
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+                "cache_creation_input_tokens": getattr(
+                    usage, "cache_creation_input_tokens", None
+                ),
+                "cache_read_input_tokens": getattr(
+                    usage, "cache_read_input_tokens", None
+                ),
+            }
+            print(
+                "[CLAUDE-CU-DEBUG] "
+                + json.dumps(debug_usage, ensure_ascii=False)
+            )
 
         self.messages.append({"role": "assistant", "content": response.content})
 
@@ -276,11 +391,15 @@ class ClaudeComputerUseAgent:
             if block.type == "tool_use" and block.name == "computer":
                 inp = block.input
                 action_type = inp.get("action", "")
+                model_coordinate = inp.get("coordinate")
+                model_start_coordinate = inp.get("start_coordinate")
+                model_end_coordinate = inp.get("end_coordinate")
 
                 actions.append(ClaudeCUAction(
                     tool_use_id=block.id,
                     action=action_type,
-                    coordinate=inp.get("coordinate"),
+                    model_coordinate=model_coordinate,
+                    coordinate=self._to_logical_coordinate(model_coordinate),
                     text=inp.get("text"),
                     keys=inp.get("keys") if isinstance(inp.get("keys"), list) else (
                         [inp["keys"]] if inp.get("keys") else None
@@ -288,8 +407,14 @@ class ClaudeComputerUseAgent:
                     scroll_direction=inp.get("scroll_direction"),
                     scroll_amount=inp.get("scroll_amount"),
                     button=inp.get("button"),
-                    start_coordinate=inp.get("start_coordinate"),
-                    end_coordinate=inp.get("end_coordinate"),
+                    model_start_coordinate=model_start_coordinate,
+                    start_coordinate=self._to_logical_coordinate(
+                        model_start_coordinate
+                    ),
+                    model_end_coordinate=model_end_coordinate,
+                    end_coordinate=self._to_logical_coordinate(
+                        model_end_coordinate
+                    ),
                     duration=inp.get("duration"),
                 ))
             elif block.type == "thinking":

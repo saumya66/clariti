@@ -117,8 +117,11 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
-    backgroundColor: '#0a0a0f',
+    backgroundColor: '#ffffff',
+    // The renderer supplies a white draggable title bar below the traffic
+    // lights, keeping the chrome consistent with the login screen.
     titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 7 },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
