@@ -41,7 +41,11 @@ from context_builder import get_context_builder
 from models.context import ContextType
 from agents import VisionAgent, PlannerAgent, WindowResolverAgent, OrchestratorAgent, ImageContextRetrieverAgent, TestPlannerAgent
 from agents.computer_use_agent import ComputerUseAgent
-from agents.claude_computer_use_agent import ClaudeComputerUseAgent, BATCHING_INSTRUCTIONS
+from agents.claude_computer_use_agent import (
+    BATCHING_INSTRUCTIONS,
+    USER_INPUT_INSTRUCTIONS,
+    ClaudeComputerUseAgent,
+)
 from agents.orchestrator_agent import ActionType as OrchestratorActionType
 from agents.vision_agent import calculate_screen_coordinates
 from agents.planner_agent import ActionType as PlanActionType
@@ -99,6 +103,15 @@ def _get_step_type(action: str) -> str:
     if 'wait' in a: return 'wait'
     if 'screenshot' in a or 'observe' in a or 'scan' in a: return 'observe'
     return 'other'
+
+
+def _redact_operator_values(text: str, values: list[str]) -> str:
+    """Keep operator-provided values out of persisted execution logs."""
+    redacted = text
+    for value in values:
+        if value:
+            redacted = redacted.replace(value, "[operator-provided value]")
+    return redacted
 
 
 @asynccontextmanager
@@ -161,6 +174,9 @@ pause_resume_events: dict[str, asyncio.Event] = {}
 pause_guidance: dict[str, str] = {}
 # Abort flag: key = context_id — when True the execution loop should stop immediately
 abort_flags: dict[str, bool] = {}
+# Pending Claude request_user_input calls, keyed by Claude's tool-use ID.
+# Values are deliberately kept only in memory for the active execution.
+pending_user_inputs: dict[str, dict] = {}
 
 
 # =============================================================================
@@ -2583,6 +2599,7 @@ class ExecuteTestsRequest(BaseModel):
     window_title: str
     test_ids: list = None  # If None, execute all tests
     provider: str = "claude"
+    execution_id: str | None = None
     # Optional: when set and CLOUD_API_URL configured, fetch tests from cloud and save runs/results
     cloud_feature_id: str | None = None
     cloud_user_id: str | None = None
@@ -2609,7 +2626,7 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
       - gemini  → OrchestratorAgent + VisionAgent two-call pattern (legacy)
 
     SSE event types:
-      suite_start, test_start, step, need_help, paused, aborted,
+      suite_start, test_start, step, need_help, input_required, paused, aborted,
       test_complete, suite_complete, error
     """
     print(f"\n{'='*80}")
@@ -2794,6 +2811,7 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
                     "immediately update your current plan and follow the instruction exactly, "
                     "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
                     "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+                    + USER_INPUT_INSTRUCTIONS
                     + BATCHING_INSTRUCTIONS
                 )
                 print(f"[DEBUG] System prompt ready — total length: {len(cu_system_prompt)} chars")
@@ -2851,6 +2869,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
             test_passed = False
             test_steps = []
+            operator_input_values: list[str] = []
             
             if provider == "claude":
                 # ── Claude Computer Use path ──
@@ -2903,6 +2922,58 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         test_passed = True
                         break
 
+                    if cu_response.input_request:
+                        if cu_response.actions:
+                            print("[USER-INPUT] Claude returned computer actions alongside request_user_input; refusing mixed tool calls")
+                            cu_response.text = "Claude returned an invalid mixed tool response."
+                            break
+
+                        input_request = cu_response.input_request
+                        input_event = asyncio.Event()
+                        pending_user_inputs[input_request.tool_use_id] = {
+                            "context_id": context_id,
+                            "execution_id": request.execution_id,
+                            "test_id": test_id,
+                            "event": input_event,
+                            "value": None,
+                            "cancelled": False,
+                        }
+                        print(
+                            f"[USER-INPUT] Waiting for operator input: "
+                            f"request={input_request.tool_use_id}, test={test_id}"
+                        )
+                        yield f"data: {json.dumps({
+                            'event': 'input_required',
+                            'execution_id': request.execution_id,
+                            'request_id': input_request.tool_use_id,
+                            'test_id': test_id,
+                            'message': input_request.message,
+                        })}\n\n"
+                        await asyncio.sleep(0)
+
+                        try:
+                            await input_event.wait()
+                            pending = pending_user_inputs.get(input_request.tool_use_id)
+                            if not pending or pending.get("cancelled") or abort_flags.get(context_id):
+                                print(f"[USER-INPUT] Wait cancelled for request {input_request.tool_use_id}")
+                                break
+
+                            answer = pending.get("value")
+                            if not isinstance(answer, str) or not answer:
+                                print(f"[USER-INPUT] Empty answer for request {input_request.tool_use_id}")
+                                break
+
+                            operator_input_values.append(answer)
+                            print(f"[USER-INPUT] Operator answered request {input_request.tool_use_id}; resuming Claude")
+                            cu_response = await asyncio.to_thread(
+                                agent.answer_user_input,
+                                input_request.tool_use_id,
+                                answer,
+                            )
+                        finally:
+                            pending_user_inputs.pop(input_request.tool_use_id, None)
+                        continue
+
                     tool_use_ids: list[str] = []
 
                     action_count = len(cu_response.actions)
@@ -2916,9 +2987,16 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             tool_use_ids.append(action.tool_use_id)
                             continue
 
-                        step_reasoning = cu_response.thinking or cu_response.text or ''
+                        step_reasoning = _redact_operator_values(
+                            cu_response.thinking or cu_response.text or '',
+                            operator_input_values,
+                        )
+                        recorded_action_text = _redact_operator_values(
+                            action.text or '',
+                            operator_input_values,
+                        ) or None
                         step_desc = step_reasoning.strip() if step_reasoning.strip() else (
-                            f"{action.action}{' → ' + action.text if action.text else ''}"
+                            f"{action.action}{' → ' + recorded_action_text if recorded_action_text else ''}"
                             f"{' at ' + str(action.coordinate) if action.coordinate else ''}"
                         )
                         step_data = {
@@ -2926,7 +3004,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             'action': action.action,
                             'type': _get_step_type(action.action),
                             'description': step_desc,
-                            'target': action.text or None,
+                            'target': recorded_action_text,
                             'value': f"({action.coordinate[0]}, {action.coordinate[1]})" if action.coordinate else None,
                             'reasoning': step_reasoning,
                             'success': False,
@@ -3192,7 +3270,10 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
             test_status = "passed" if test_passed else "failed"
             conclusion = ""
             if provider == "claude" and cu_response:
-                conclusion = cu_response.text or cu_response.thinking or ""
+                conclusion = _redact_operator_values(
+                    cu_response.text or cu_response.thinking or "",
+                    operator_input_values,
+                )
             elif provider != "claude" and 'decision' in dir():
                 conclusion = getattr(decision, 'reasoning', '') or ""
             print(f"[EXECUTE] ===== Test {test_id} {test_status.upper()} =====")
@@ -3312,6 +3393,9 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
         pause_flags.pop(context_id, None)
         pause_resume_events.pop(context_id, None)
         pause_guidance.pop(context_id, None)
+        for request_id, pending in list(pending_user_inputs.items()):
+            if pending.get("context_id") == context_id:
+                pending_user_inputs.pop(request_id, None)
 
         suite_complete_event = {'event': 'suite_complete', 'passed': suite_results['passed'], 'failed': suite_results['failed'], 'skipped': suite_results['skipped'], 'total': len(test_cases)}
         yield f"data: {json.dumps(suite_complete_event)}\n\n"
@@ -3331,6 +3415,34 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 class ProvideGuidanceRequest(BaseModel):
     """Request to provide guidance when agent is stuck."""
     guidance: str
+
+
+class ProvideUserInputRequest(BaseModel):
+    """Answer a request_user_input tool call from the active Claude execution."""
+    execution_id: str | None = None
+    value: str
+
+
+@app.post("/feature/{context_id}/execute/input/{request_id}")
+async def provide_user_input(
+    context_id: str,
+    request_id: str,
+    request: ProvideUserInputRequest,
+):
+    pending = pending_user_inputs.get(request_id)
+    if not pending or pending.get("context_id") != context_id:
+        raise HTTPException(status_code=404, detail="This input request is no longer active.")
+    if pending.get("execution_id") != request.execution_id:
+        raise HTTPException(status_code=409, detail="This input request belongs to a different execution.")
+    if pending.get("value") is not None:
+        raise HTTPException(status_code=409, detail="This input request has already been answered.")
+    if not request.value.strip():
+        raise HTTPException(status_code=400, detail="Please enter a value before continuing.")
+
+    pending["value"] = request.value
+    pending["event"].set()
+    print(f"[USER-INPUT] Answer received for request {request_id}")
+    return {"success": True, "message": "Input received. Execution will continue."}
 
 
 @app.post("/feature/{context_id}/execute/{test_id}/guidance")
@@ -3419,6 +3531,11 @@ async def abort_execution(context_id: str):
     for key in list(guidance_events.keys()):
         if key.startswith(f"{context_id}:"):
             guidance_events[key].set()
+    # Unblock any Claude request_user_input wait so the execution can exit.
+    for pending in pending_user_inputs.values():
+        if pending.get("context_id") == context_id:
+            pending["cancelled"] = True
+            pending["event"].set()
     print(f"[ABORT] 🛑  Abort requested for context {context_id} — loop will stop after current step")
     return {"success": True, "message": "Abort signal sent."}
 

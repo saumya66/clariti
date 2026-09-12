@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electronAPI', {
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   platform: process.platform,
+  requestUserAttention: () => ipcRenderer.invoke('request-user-attention'),
 
   // API key management
   saveAnthropicKey: (key: string) => ipcRenderer.invoke('save-anthropic-key', key),
@@ -21,4 +22,3 @@ contextBridge.exposeInMainWorld('electronAPI', {
   requestAccessibility: (): Promise<boolean> =>
     ipcRenderer.invoke('request-accessibility'),
 });
-

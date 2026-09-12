@@ -172,6 +172,60 @@ function GuidancePanel({
   );
 }
 
+// ─── Requested input panel ───────────────────────────────────────────────────
+
+function RequestedInputPanel({
+  message,
+  submitting,
+  error,
+  onSubmit,
+}: {
+  message: string;
+  submitting: boolean;
+  error: string | null;
+  onSubmit: (value: string) => void;
+}) {
+  const [value, setValue] = React.useState('');
+
+  const handleSubmit = () => {
+    if (!value.trim() || submitting) return;
+    onSubmit(value.trim());
+  };
+
+  return (
+    <div className="mx-8 mb-4 overflow-hidden rounded-2xl border border-violet-400/30 bg-violet-500/5">
+      <div className="flex items-center gap-2.5 border-b border-violet-400/20 bg-violet-500/10 px-5 py-3">
+        <MessageSquare className="size-4 shrink-0 text-violet-600" />
+        <span className="text-sm font-semibold text-violet-700">Clariti needs your input</span>
+      </div>
+      <div className="px-5 pb-4 pt-4">
+        <p className="mb-3 text-sm font-medium leading-relaxed text-foreground">{message}</p>
+        <div className="flex gap-2">
+          <input
+            autoFocus
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleSubmit();
+            }}
+            placeholder="Enter the requested value"
+            className="h-10 flex-1 rounded-xl border border-border bg-card px-3.5 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+          <button
+            onClick={handleSubmit}
+            disabled={!value.trim() || submitting}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40 active:scale-95"
+          >
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            {submitting ? 'Sending…' : 'Submit'}
+          </button>
+        </div>
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Conclusion block ────────────────────────────────────────────────────────
 
 function stripMarkdown(text: string): string {
@@ -242,6 +296,9 @@ function ExecutePage() {
     suiteResult,
     error,
     guidanceNeeded,
+    waitingForInput,
+    isInputSubmitting,
+    inputError,
     isPaused,
     isPausePending,
     isAbortPending,
@@ -250,6 +307,7 @@ function ExecutePage() {
     setInitialTests,
     startExecution,
     submitGuidance,
+    submitRequestedInput,
     pauseExecution,
     resumeExecution,
     abortExecution,
@@ -346,7 +404,7 @@ function ExecutePage() {
   const isViewingHistory = isRunning && selectedTestId !== null && selectedTestId !== currentTestId;
 
   // Whether to show the guidance panel
-  const showGuidance = isRunning && (!!guidanceNeeded || isPaused);
+  const showGuidance = isRunning && !waitingForInput && (!!guidanceNeeded || isPaused);
 
   const handleRunAgain = () => {
     setSelectedTestId(null);
@@ -390,6 +448,8 @@ function ExecutePage() {
     ? 'bg-destructive animate-pulse'
     : isPausePending
     ? 'bg-orange-400 animate-pulse'
+    : waitingForInput
+    ? 'bg-violet-500 animate-pulse'
     : isPaused
     ? 'bg-orange-400'
     : isRunning
@@ -406,6 +466,8 @@ function ExecutePage() {
     ? 'Aborting…'
     : isPausePending
     ? 'Pausing after this step…'
+    : waitingForInput
+    ? 'Waiting for your input'
     : isPaused
     ? 'Paused'
     : isRunning
@@ -584,7 +646,7 @@ function ExecutePage() {
           )}
 
           {/* Running controls */}
-          {!isReplayMode && isRunning && !isPaused && !guidanceNeeded && (
+          {!isReplayMode && isRunning && !isPaused && !guidanceNeeded && !waitingForInput && (
             isPausePending ? (
               /* Pending state — shown immediately on button press */
               <div className="w-full inline-flex items-center justify-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-500">
@@ -788,13 +850,13 @@ function ExecutePage() {
                       Replay
                     </span>
                   )}
-                  {!isReplayMode && isRunning && !isViewingHistory && !isPaused && !guidanceNeeded && (
+                  {!isReplayMode && isRunning && !isViewingHistory && !isPaused && !guidanceNeeded && !waitingForInput && (
                     <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
                       <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
                       Live
                     </span>
                   )}
-                  {(isPaused || !!guidanceNeeded) && !isViewingHistory && (
+                  {(isPaused || !!guidanceNeeded || !!waitingForInput) && !isViewingHistory && (
                     <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-orange-500">
                       <PauseCircle className="size-3" />
                       Waiting for you
@@ -849,6 +911,16 @@ function ExecutePage() {
               </div>
             </div>
           </div>
+
+          {!isReplayMode && isRunning && waitingForInput && (
+            <RequestedInputPanel
+              key={waitingForInput.requestId}
+              message={waitingForInput.message}
+              submitting={isInputSubmitting}
+              error={inputError}
+              onSubmit={(value) => submitRequestedInput(value)}
+            />
+          )}
 
           {/* Guidance panel — shown when stuck or manually paused (live mode only) */}
           {!isReplayMode && showGuidance && (

@@ -5,11 +5,13 @@ import {
   pauseExecution as apiPauseExecution,
   resumeExecution as apiResumeExecution,
   abortExecution as apiAbortExecution,
+  provideUserInput,
   CUProvider,
   type CloudTestCase,
   type TestStartEvent,
   type StepEvent,
   type NeedHelpEvent,
+  type InputRequiredEvent,
   type PausedEvent,
   type TestCompleteEvent,
   type SuiteCompleteEvent,
@@ -53,6 +55,13 @@ export interface GuidanceNeeded {
   confidence?: 'high' | 'medium' | 'low';
 }
 
+export interface WaitingForInput {
+  executionId: string | null;
+  requestId: string;
+  testId: string;
+  message: string;
+}
+
 function getActivityType(action: string): ActivityEntry['type'] {
   const a = action.toLowerCase();
   if (a.includes('click')) return 'click';
@@ -87,6 +96,9 @@ interface TestSuiteExecutionState {
 
   // Guidance / pause state
   guidanceNeeded: GuidanceNeeded | null;
+  waitingForInput: WaitingForInput | null;
+  isInputSubmitting: boolean;
+  inputError: string | null;
   isPaused: boolean;
 
   // Pending acknowledgement — true from the moment button is pressed until backend confirms
@@ -107,6 +119,8 @@ interface TestSuiteExecutionState {
 
   /** Submit guidance when the agent is stuck or paused */
   submitGuidance: (guidance: string) => Promise<void>;
+  /** Answer a value explicitly requested by Claude's request_user_input tool. */
+  submitRequestedInput: (value: string) => Promise<void>;
   /** Manually pause execution after the current step */
   pauseExecution: () => Promise<void>;
   /** Resume execution after a manual pause, optionally with guidance */
@@ -135,6 +149,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
   suiteResult: null,
   error: null,
   guidanceNeeded: null,
+  waitingForInput: null,
+  isInputSubmitting: false,
+  inputError: null,
   isPaused: false,
   isPausePending: false,
   isAbortPending: false,
@@ -177,6 +194,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       suiteResult: null,
       error: null,
       guidanceNeeded: null,
+      waitingForInput: null,
+      isInputSubmitting: false,
+      inputError: null,
       isPaused: false,
       projectLearningStatus: 'idle',
       projectLearningMessage: null,
@@ -211,6 +231,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
               // tests so the user can browse previous test logs while a new one runs.
               thinking: '',
               guidanceNeeded: null,
+              waitingForInput: null,
               isPaused: false,
             }));
           },
@@ -272,6 +293,30 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
             }));
           },
 
+          onInputRequired: (data: InputRequiredEvent) => {
+            void window.electronAPI?.requestUserAttention?.();
+            const entry: ActivityEntry = {
+              id: `${data.test_id}-input-${Date.now()}`,
+              time: formatTime(new Date()),
+              testId: data.test_id,
+              action: 'input_required',
+              description: data.message,
+              type: 'guidance',
+              success: true,
+            };
+            set((state) => ({
+              activityLog: [...state.activityLog, entry],
+              waitingForInput: {
+                executionId: data.execution_id,
+                requestId: data.request_id,
+                testId: data.test_id,
+                message: data.message,
+              },
+              isInputSubmitting: false,
+              inputError: null,
+            }));
+          },
+
           onPaused: (data: PausedEvent) => {
             // Backend confirmed pause — clear pending and set paused
             set({ isPaused: true, isPausePending: false, guidanceNeeded: null });
@@ -300,6 +345,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
                   : t
               ),
               guidanceNeeded: null,
+              waitingForInput: null,
+              isInputSubmitting: false,
+              inputError: null,
               isPaused: false,
             }));
           },
@@ -316,6 +364,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
               currentTestId: null,
               thinking: '',
               guidanceNeeded: null,
+              waitingForInput: null,
+              isInputSubmitting: false,
+              inputError: null,
               isPaused: false,
             });
           },
@@ -344,11 +395,11 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           },
 
           onAborted: () => {
-            set({ status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false });
+            set({ status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, waitingForInput: null, isInputSubmitting: false, inputError: null, isPaused: false });
           },
 
           onError: (message) => {
-            set({ status: 'error', error: message, thinking: '', guidanceNeeded: null, isPaused: false });
+            set({ status: 'error', error: message, thinking: '', guidanceNeeded: null, waitingForInput: null, isInputSubmitting: false, inputError: null, isPaused: false });
           },
         },
         _abortController?.signal
@@ -360,6 +411,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
         error: err instanceof Error ? err.message : 'Execution failed',
         thinking: '',
         guidanceNeeded: null,
+        waitingForInput: null,
+        isInputSubmitting: false,
+        inputError: null,
         isPaused: false,
       });
     } finally {
@@ -379,6 +433,26 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       set({ guidanceNeeded: null });
     } catch (err) {
       console.error('Failed to submit guidance:', err);
+    }
+  },
+
+  submitRequestedInput: async (value: string) => {
+    const { featureId, waitingForInput } = get();
+    if (!featureId || !waitingForInput || !value.trim()) return;
+    set({ isInputSubmitting: true, inputError: null });
+    try {
+      await provideUserInput(
+        featureId,
+        waitingForInput.requestId,
+        waitingForInput.executionId,
+        value.trim()
+      );
+      set({ waitingForInput: null, isInputSubmitting: false, inputError: null });
+    } catch (err) {
+      set({
+        isInputSubmitting: false,
+        inputError: err instanceof Error ? err.message : 'Could not submit input.',
+      });
     }
   },
 
@@ -433,7 +507,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
     // Fallback: if no onAborted SSE event arrives (e.g. stream already closed), settle state
     set((state) =>
       state.isAbortPending
-        ? { status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, isPaused: false }
+        ? { status: 'aborted', isAbortPending: false, currentTestId: null, thinking: '', guidanceNeeded: null, waitingForInput: null, isInputSubmitting: false, inputError: null, isPaused: false }
         : {}
     );
   },
@@ -495,6 +569,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       thinking: '',
       error: null,
       guidanceNeeded: null,
+      waitingForInput: null,
+      isInputSubmitting: false,
+      inputError: null,
       isPaused: false,
       isPausePending: false,
       isAbortPending: false,
@@ -516,6 +593,9 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       suiteResult: null,
       error: null,
       guidanceNeeded: null,
+      waitingForInput: null,
+      isInputSubmitting: false,
+      inputError: null,
       isPaused: false,
       isPausePending: false,
       isAbortPending: false,

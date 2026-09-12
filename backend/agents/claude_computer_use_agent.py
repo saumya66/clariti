@@ -79,6 +79,19 @@ def _count_images(value: Any) -> int:
         return sum(_count_images(item) for item in value)
     return 0
 
+
+def _redact_known_values(value: Any, secrets: list[str]) -> Any:
+    """Redact operator-provided values from optional debug output."""
+    if isinstance(value, dict):
+        return {key: _redact_known_values(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_known_values(item, secrets) for item in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "<redacted operator input>")
+    return value
+
 BATCHING_INSTRUCTIONS = (
     "\n\nMULTI-ACTION BATCHING — CRITICAL FOR PERFORMANCE:\n"
     "After ALL actions in your response are executed, you automatically receive ONE "
@@ -101,6 +114,39 @@ BATCHING_INSTRUCTIONS = (
     "Returning one action per response when the entire sequence is already obvious is wasteful and slow."
 )
 
+USER_INPUT_INSTRUCTIONS = (
+    "\n\nREQUESTING INPUT FROM THE OPERATOR:\n"
+    "You have a `request_user_input` tool. Use it when the application requires "
+    "an exact value that is not available in the test goal, project context, "
+    "project owner memory, or earlier operator messages. This includes OTPs, "
+    "passcodes, passwords, account email addresses, phone numbers, invite codes, "
+    "and other user-specific or company-specific values. Never invent or guess "
+    "such a value. Call `request_user_input` with a short, specific message telling "
+    "the operator what to enter. Do not call `computer` in the same response. Wait "
+    "for the tool result, then continue the test using the value the operator provided. "
+    "You may still generate arbitrary input when the test explicitly asks for random, "
+    "fake, invalid, or malformed data."
+)
+
+REQUEST_USER_INPUT_TOOL = {
+    "name": "request_user_input",
+    "description": (
+        "Pause execution and ask the human operator for a required value that is "
+        "not available in the test instructions, project context, memory, or prior "
+        "operator messages. Never invent user-specific or company-specific values."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "A short, clear message telling the operator exactly what value is needed.",
+            }
+        },
+        "required": ["message"],
+    },
+}
+
 
 @dataclass
 class ClaudeCUAction:
@@ -122,9 +168,17 @@ class ClaudeCUAction:
 
 
 @dataclass
+class ClaudeUserInputRequest:
+    """A request from Claude for a value that only the operator can provide."""
+    tool_use_id: str
+    message: str
+
+
+@dataclass
 class ClaudeCUResponse:
     """Parsed response from Claude Computer Use."""
     actions: list[ClaudeCUAction] = field(default_factory=list)
+    input_request: Optional[ClaudeUserInputRequest] = None
     text: Optional[str] = None
     thinking: Optional[str] = None
     is_done: bool = False
@@ -186,6 +240,7 @@ class ClaudeComputerUseAgent:
         "immediately update your current plan and follow the instruction exactly, "
         "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
         "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+        + USER_INPUT_INSTRUCTIONS
         + BATCHING_INSTRUCTIONS
     )
 
@@ -213,6 +268,7 @@ class ClaudeComputerUseAgent:
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         self.messages: list[dict] = []
         self._pending_guidance: Optional[str] = None
+        self._operator_input_values: list[str] = []
         self.tools: list[dict] = []
         self._api_call_count = 0
 
@@ -228,7 +284,8 @@ class ClaudeComputerUseAgent:
                 "name": "computer",
                 "display_width_px": self.screenshot_width,
                 "display_height_px": self.screenshot_height,
-            }
+            },
+            REQUEST_USER_INPUT_TOOL,
         ]
         print(
             "[CLAUDE-CU] Screenshot spaces: "
@@ -331,6 +388,21 @@ class ClaudeComputerUseAgent:
         self.messages.append({"role": "user", "content": user_content})
         return self._call()
 
+    def answer_user_input(self, tool_use_id: str, value: str) -> ClaudeCUResponse:
+        """Return the operator's answer to Claude's request_user_input tool call."""
+        self._operator_input_values.append(value)
+        self.messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": value,
+                }
+            ],
+        })
+        return self._call()
+
     def _call(self) -> ClaudeCUResponse:
         """Call Claude and parse the response."""
         self._api_call_count += 1
@@ -344,7 +416,10 @@ class ClaudeComputerUseAgent:
                 "image_count": _count_images(self.messages),
                 "system": _sanitise_for_debug(self.system_prompt),
                 "tools": _sanitise_for_debug(self.tools),
-                "messages": _sanitise_for_debug(self.messages),
+                "messages": _redact_known_values(
+                    _sanitise_for_debug(self.messages),
+                    self._operator_input_values,
+                ),
             }
             print(
                 "[CLAUDE-CU-DEBUG] Sanitized request; text fields may contain "
@@ -384,6 +459,7 @@ class ClaudeComputerUseAgent:
         self.messages.append({"role": "assistant", "content": response.content})
 
         actions: list[ClaudeCUAction] = []
+        input_request: Optional[ClaudeUserInputRequest] = None
         text_parts: list[str] = []
         thinking_parts: list[str] = []
 
@@ -417,6 +493,12 @@ class ClaudeComputerUseAgent:
                     ),
                     duration=inp.get("duration"),
                 ))
+            elif block.type == "tool_use" and block.name == "request_user_input":
+                message = str(block.input.get("message", "")).strip()
+                input_request = ClaudeUserInputRequest(
+                    tool_use_id=block.id,
+                    message=message or "Please provide the information needed to continue.",
+                )
             elif block.type == "thinking":
                 thinking_parts.append(getattr(block, "thinking", "") or "")
             elif block.type == "text":
@@ -426,6 +508,7 @@ class ClaudeComputerUseAgent:
 
         return ClaudeCUResponse(
             actions=actions,
+            input_request=input_request,
             text=" ".join(text_parts) if text_parts else None,
             thinking=" ".join(thinking_parts) if thinking_parts else None,
             is_done=is_done,

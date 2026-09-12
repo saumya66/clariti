@@ -774,6 +774,14 @@ export interface NeedHelpEvent {
   confidence?: 'high' | 'medium' | 'low';
 }
 
+export interface InputRequiredEvent {
+  event: 'input_required';
+  execution_id: string | null;
+  request_id: string;
+  test_id: string;
+  message: string;
+}
+
 export interface PausedEvent {
   event: 'paused';
   test_id: string;
@@ -827,6 +835,7 @@ export type TestExecutionEvent =
   | TestStartEvent
   | StepEvent
   | NeedHelpEvent
+  | InputRequiredEvent
   | PausedEvent
   | AbortedEvent
   | TestCompleteEvent
@@ -841,6 +850,7 @@ export interface ExecutionCallbacks {
   onTestStart?: (data: TestStartEvent) => void;
   onStep?: (data: StepEvent) => void;
   onNeedHelp?: (data: NeedHelpEvent) => void;
+  onInputRequired?: (data: InputRequiredEvent) => void;
   onPaused?: (data: PausedEvent) => void;
   onAborted?: (data: AbortedEvent) => void;
   onTestComplete?: (data: TestCompleteEvent) => void;
@@ -867,6 +877,19 @@ export async function abortExecution(
   const response = await apiClient.post(`/feature/${contextId}/execute/abort`, {
     execution_id: executionId,
   });
+  return response.data;
+}
+
+export async function provideUserInput(
+  contextId: string,
+  requestId: string,
+  executionId: string | null,
+  value: string
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(
+    `/feature/${contextId}/execute/input/${requestId}`,
+    { execution_id: executionId, value }
+  );
   return response.data;
 }
 
@@ -921,6 +944,9 @@ export async function executeTestsStream(
                   break;
                 case 'need_help':
                   callbacks.onNeedHelp?.(event);
+                  break;
+                case 'input_required':
+                  callbacks.onInputRequired?.(event);
                   break;
                 case 'paused':
                   callbacks.onPaused?.(event);

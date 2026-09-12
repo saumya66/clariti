@@ -201,6 +201,16 @@ ipcMain.handle('get-backend-url', () => {
   return process.env.CLARITI_BACKEND_URL || `http://127.0.0.1:${backendPort}`;
 });
 
+// Draw attention to an operator input request without relying on macOS
+// Notification Center (which may be unavailable for unsigned local builds).
+ipcMain.handle('request-user-attention', () => {
+  if (!mainWindow || mainWindow.isFocused()) return;
+  mainWindow.flashFrame(true);
+  if (process.platform === 'darwin') {
+    app.dock?.bounce('critical');
+  }
+});
+
 // Permission checking via Electron/macOS APIs
 // These check Clariti.app's TCC status directly — accurate and instant,
 // no dependency on the backend process being alive or restarted.

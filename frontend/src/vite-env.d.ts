@@ -13,6 +13,7 @@ interface Window {
   electronAPI: {
     getBackendUrl: () => Promise<string>;
     platform: string;
+    requestUserAttention: () => Promise<void>;
     saveAnthropicKey: (key: string) => Promise<void>;
     getAnthropicKey: () => Promise<string | null>;
     deleteAnthropicKey: () => Promise<void>;
