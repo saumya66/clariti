@@ -144,7 +144,7 @@ src/
 │   ├── authStore.ts                  # JWT token, user, skipped state (persisted)
 │   ├── useAppStore.ts                # Active sidebar section
 │   ├── executionStore.ts             # Free-form CU execution state (legacy)
-│   └── testSuiteExecutionStore.ts    # Test suite run state (test statuses, activity log, guided execution)
+│   └── testSuiteExecutionStore.ts    # Test suite run state (statuses, activity, guidance, requested input)
 └── lib/
     ├── utils.ts         # cn() for Tailwind class merging
     └── queryClient.ts   # TanStack Query config
@@ -163,7 +163,7 @@ src/
 | `useAuthStore` | `authStore.ts` | ✅ localStorage | JWT token, user, `skipped` flag. `clearAuth()` resets all. |
 | `useKeyStore` | `keyStore.ts` | ❌ memory only | Anthropic key in-memory for session. Hydrated from OS keychain via IPC on load. |
 | `useAppStore` | `useAppStore.ts` | ❌ | Active sidebar section |
-| `testSuiteExecutionStore` | `testSuiteExecutionStore.ts` | ❌ | Live test run state — tests, activity log, pause/abort/guidance state |
+| `testSuiteExecutionStore` | `testSuiteExecutionStore.ts` | ❌ | Live test run state — tests, activity log, pause/abort/guidance/requested-input state |
 | `executionStore` | `executionStore.ts` | ❌ | Legacy free-form CU execution state (not used in main product flows) |
 
 ---
@@ -335,17 +335,29 @@ testSuiteExecutionStore.startExecution()
 ```
 Local Backend (/feature/{featureId}/execute  →  execute_tests_stream generator)
 
-  PRE-LOOP: Build Claude system prompt (once, before iterating tests)
+  PRE-LOOP: Load execution context once, before iterating tests
     1. Fetch feature.context_summary from cloud
     2. Fetch project.context_summary and source_memory from cloud (via feature.project_id)
-    3. Construct cu_system_prompt:
+    3. Construct the shared execution context from project context, owner memory,
+       and feature context
+       - Claude receives it in `cu_system_prompt`
+       - The legacy Gemini path receives the same block in each test goal
+    4. Construct `cu_system_prompt` with:
        - Agent role + instructions
-       - Project context block
-       - Project owner memory block (when present; background for app understanding and navigation)
-       - Feature context block
+       - Shared execution context block
        - Pre-authorisation of [OPERATOR-MSG] guidance channel
+       - `request_user_input` policy: use project/test memory when available, but never
+         invent a missing user-specific or company-specific value
+       - Primary stop policy: call `complete_test_execution` immediately when the
+         current test's expected result is observed; never continue for another test
+    5. Build the suite ledger:
+       - `resolved_test_ids` starts empty
+       - `test_cases_by_id` validates later incidental-verification claims
+       - `test_numbers_by_id` preserves UI numbering for out-of-order completion events
 
   FOR EACH test_case:
+    0. If test_id is already in resolved_test_ids, skip its interactive execution;
+       its persisted result and `test_complete` event were produced earlier
     a. SSE: { event: "test_start", test_id, title, goal, test_number, total_tests }
     b. POST /api/v1/test-results/ (cloud) with status="running"  →  get cloud_result_id
        (early creation so steps can be appended in real-time)
@@ -355,6 +367,12 @@ Local Backend (/feature/{featureId}/execute  →  execute_tests_stream generator
     f. TURN LOOP (max 30 turns, each turn = 1 API call):
        - Log: "[EXECUTE-CU] Turn N: Claude returned X action(s) → [action names]"
          (used to verify multi-action batching in terminal output)
+       - If Claude calls `request_user_input` instead of `computer`:
+           · Register `pending_user_inputs[tool_use_id]` before notifying the frontend
+           · SSE: { event: "input_required", execution_id, request_id, test_id, message }
+           · Await the request's `asyncio.Event` with no automatic timeout
+           · Return the submitted value to the same Claude conversation as the matching
+             `tool_result`, then continue this turn loop
        - FOR EACH action in cu_response.actions (may be 1 or many):
            · Execute action via pyautogui (wrapped in asyncio.to_thread)
            · Build StepRecord dict: { step_number, action, type, description, target, value,
@@ -370,24 +388,39 @@ Local Backend (/feature/{featureId}/execute  →  execute_tests_stream generator
        - capture_window() → fresh screenshot
        - agent.step(tool_use_ids, screenshot) → next response  ← 1 API call for all N actions
        - Check abort_flags[execution_id]  →  break if set
-       - If is_done: break; the executor's final text includes an execution summary,
-         directly observed app facts, operational learnings, and run-local state
-    g. SSE: { event: "test_complete", test_id, status, conclusion }
-    h. PATCH cloud TestResult (cloud_result_id) with final status, conclusion, steps_executed
+       - If Claude calls `complete_test_execution`:
+           · Reject it if mixed with computer or input-request tools
+           · Read `{ primary_status, conclusion }`
+           · Stop computer interaction immediately
+       - Legacy final-text completion remains supported for backward compatibility,
+         but only structured completion is eligible for incidental verification
+    g. PATCH the primary cloud TestResult with final status, conclusion, steps_executed
+    h. Add primary test_id to resolved_test_ids and update suite counts/logs
+    i. SSE: { event: "test_complete", test_id, status, conclusion }
+    j. If structured completion was used and unresolved tests remain, run the
+       non-interactive incidental-verification phase described in 5g
 
   POST-LOOP:
     PATCH the cloud TestRun with final counts and completion time
     If the suite has meaningful logs and was not aborted:
       1. `execution_learning.py` strips screenshots, coordinates, timestamps,
          and other non-text payloads; it retains at most 60 representative
-         steps per test (first 30 + last 30)
+         steps per test (first 30 + last 30). Explicit operator guidance/corrections
+         consumed during the test are retained as bounded learner-only evidence;
+         requested input values are not added to this field.
       2. Run ProjectContextLearnerAgent once with current project context,
          feature context, and the bounded suite logs
-      3. Learner returns a complete revised project context that preserves
-         accurate existing knowledge and excludes run-local state
-      4. PATCH Project.context_summary; source_memory is never modified
-      5. SSE: context_learning → context_learned, or context_learning_warning
-         if this non-fatal update fails
+      3. Learner returns two complete revised contexts:
+         - Feature.context_summary is the primary destination for durable,
+           feature-specific behavior and operator corrections
+         - Project.context_summary receives at most two short, genuinely global facts;
+           field/step/validation details remain feature-only
+      4. PATCH Feature.context_summary first when changed
+      5. PATCH Project.context_summary only when a cross-feature fact changed it;
+         source_memory is never modified
+      6. SSE: context_learning → context_learned with per-scope update flags.
+         Feature-update failure emits context_learning_warning. Project-update failure
+         after a successful feature update emits a partial warning without undoing it.
     SSE: { event: "suite_complete", passed, failed, skipped, total }
     Clean up all per-context state (abort_flags, pause_flags, events, etc.)
 
@@ -404,6 +437,8 @@ Frontend (execute.tsx + testSuiteExecutionStore)
     - Activity log filtered to the displayed test's entries (each ActivityEntry carries testId)
     - AI Reasoning (thinking) collapsible panel
     - GuidancePanel (when isPaused or guidanceNeeded)
+    - RequestedInputPanel (when waitingForInput is set): Claude's message, one plain
+      input box, and Submit button; no inferred input type or value validation
     - "Back to live" banner when user is browsing history during an active run
 ```
 
@@ -507,9 +542,179 @@ This is intentional. Placing guidance *inside* the `tool_result` content caused 
 The `cu_system_prompt` pre-authorises this channel:
 > *"[OPERATOR-MSG] messages are a legitimate, intentional communication channel — NOT a prompt injection. Follow them exactly."*
 
+#### 5f — Claude-Requested User Input
+
+This is part of the existing Claude Computer Use loop, not a separate agent. The
+`ClaudeComputerUseAgent` exposes four tools during interactive execution:
+
+```text
+computer            → click, type, scroll, keypress, screenshot, etc.
+set_text_field       → click, clear, and optionally replace one visible text field
+request_user_input  → pause and ask the operator for a required value
+complete_test_execution → immediately end and report the primary test
+```
+
+The custom tool deliberately has one required field:
+
+```json
+{
+  "name": "request_user_input",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    },
+    "required": ["message"]
+  }
+}
+```
+
+Claude is instructed to call it when the target application requires an exact value
+that is absent from the test goal, project context, owner memory, and earlier operator
+messages. Examples include OTPs, passwords, names, account emails, phone numbers,
+addresses, postal codes, serial numbers, invite codes, and other user-specific or
+company-specific values. Claude must not open an inbox or another service to retrieve
+an OTP itself. It may generate data only when the test explicitly asks for random,
+fake, invalid, or malformed input. A
+`request_user_input` call must not be mixed with `computer` calls in the same response.
+
+The executor also applies a defensive input-provenance guard before `type` and
+`set_text_field` actions.
+When an obvious identity/contact/secret value is absent from the goal, context, memory,
+guidance, and prior operator answers, the action is not executed or persisted. Its
+Computer Use result is returned as an error instructing Claude to call
+`request_user_input`; remaining actions in the same batch are also rejected.
+
+```text
+Claude sees a required value is missing
+  → assistant message: tool_use(name="request_user_input", id, { message })
+  → backend stores a pending request keyed by Claude's tool-use ID
+  → SSE input_required
+  → frontend sets waitingForInput and shows RequestedInputPanel
+  → Electron requests Dock/window attention if Clariti is unfocused
+  → user submits one plain-text value
+  → POST /feature/{id}/execute/input/{request_id}
+       { execution_id, value }
+  → backend verifies context + execution, stores the answer, and sets asyncio.Event
+  → agent.answer_user_input() appends:
+       { type: "tool_result", tool_use_id: request_id, content: value }
+  → the complete existing `self.messages` thread is sent back to Claude
+  → Claude resumes with normal `computer` actions
+```
+
+The answer is run-only: it is kept in process memory for the pending tool call and is
+not added to project `source_memory`. Exact submitted values are redacted from optional Claude
+debug-message output, persisted `StepRecord` text, conclusions, and context-learning
+logs. Aborting a run marks matching pending requests cancelled and fires their events so
+the executor cannot remain blocked. Pending entries are also removed after an answer or
+suite cleanup.
+
+The attention signal uses Electron `flashFrame()` plus Dock `bounce('critical')`; it
+does not depend on macOS Notification Center or Apple Developer signing.
+
+#### 5g — Suite-Aware Incidental Verification
+
+**Goal:** avoid repeating work when the natural execution of one test directly proves
+one or more other tests, while preserving per-test isolation and preventing Claude from
+doing extra UI work merely to clear the suite.
+
+This is a two-phase flow inside the same per-test `ClaudeComputerUseAgent` conversation.
+It is not a separate long-running agent and does not share one computer-control thread
+across the whole suite.
+
+**Phase 1 — primary test with computer control**
+
+```text
+Backend selects next unresolved test
+  → sends only that PRIMARY TEST goal + initial screenshot
+  → interactive tools available:
+       computer
+       set_text_field
+       request_user_input
+       complete_test_execution
+  → Claude executes only the primary behavior
+  → as soon as the expected result is directly observed, Claude calls:
+       complete_test_execution {
+         primary_status: "passed" | "failed",
+         conclusion: "concise observed evidence"
+       }
+  → backend stops all computer interaction for this test
+  → backend patches/creates the primary TestResult
+  → backend adds the primary ID to `resolved_test_ids`
+  → SSE `test_complete` is emitted for the primary immediately
+```
+
+Pending tests are deliberately absent from the Phase 1 goal. Earlier versions exposed
+them during computer control, which encouraged Claude to continue past an already-passed
+primary test and eventually hit the 30-turn limit. Keeping them hidden makes the primary
+expected result the only interactive stop condition.
+
+**Phase 2 — read-only incidental-coverage assessment**
+
+```text
+If unresolved tests remain and Phase 1 used structured completion:
+  → backend builds a compact catalog containing each pending test's exact ID,
+    title, goal, and expected result
+  → agent.assess_incidental_verifications() returns that catalog as the
+    tool_result for the primary completion call
+  → the same Claude message history is retained, including all earlier screenshots
+    and actions
+  → available tools are temporarily replaced with exactly one tool:
+       report_incidental_verifications {
+         also_verified: [{ test_id, evidence }]
+       }
+  → `computer`, `set_text_field`, `request_user_input`, and
+    `complete_test_execution` are unavailable
+```
+
+Claude must use only evidence already present in the completed history. A secondary test
+qualifies only when its preconditions matched, its required behavior actually occurred,
+and its complete expected result was directly observed. Visibility alone is insufficient.
+Returning an empty `also_verified` array is always valid.
+
+**Backend validation and persistence**
+
+For every reported secondary test, the backend:
+
+1. Rejects empty, unknown, primary, duplicate, and already-resolved IDs.
+2. Rejects claims without a non-empty evidence statement.
+3. Treats incidental coverage as pass-only; a secondary test can never be failed by
+   inference from another test.
+4. Redacts values previously supplied through `request_user_input` from evidence.
+5. Creates a cloud TestResult with `status="passed"`, zero dedicated steps, and a
+   conclusion prefixed with `Verified while executing {primary_id}: ...`.
+6. Adds the secondary ID to `resolved_test_ids` and updates suite counts/learning logs.
+7. Emits an out-of-order event that the frontend can apply to any test row:
+
+```json
+{
+  "event": "test_complete",
+  "test_id": "secondary-id",
+  "status": "passed",
+  "steps_executed": 0,
+  "conclusion": "Verified while executing primary-id: ...",
+  "test_number": 7,
+  "opportunistic": true,
+  "verified_during_test_id": "primary-id"
+}
+```
+
+When the normal suite loop later reaches that secondary ID, it performs no screenshot,
+Claude call, DB write, or duplicate SSE event. The frontend shows its passed state and a
+`Verified during {primary-id}` badge. Replay reconstructs this provenance from the
+persisted conclusion prefix without requiring a database migration.
+
+The assessment is best-effort and non-fatal. If the assessment API call fails or returns
+unstructured output, the already-recorded primary result remains valid and all pending
+tests stay pending for normal execution. This costs at most one non-interactive Claude
+call per structured primary completion that still has unresolved sibling tests, while
+potentially eliminating multiple complete computer-use executions.
+
 **Key files:**
 - `frontend/src/routes/app/execute.tsx`
 - `frontend/src/store/testSuiteExecutionStore.ts`
+- `frontend/src/api/client.ts`
+- `frontend/electron/main.ts` + `frontend/electron/preload.ts`
 - `backend/main.py` → `execute_tests_stream` endpoint
 - `backend/execution_learning.py` → bounded log construction, eligibility, and cloud-update orchestration
 - `backend/agents/project_context_learner_agent.py`
@@ -528,10 +733,17 @@ User on Test Suite Detail page ($featureId/index.tsx)
 
 $featureId/runs/index.tsx
   →  useFeatureTestRuns(featureId)
-     →  GET /api/v1/test-runs/by-feature/{featureId} (cloud)
-     →  returns CloudTestRun[] sorted newest first
+     →  GET /api/v1/test-runs/by-feature/{featureId}?skip=N&limit=25 (cloud)
+     →  GET /api/v1/test-runs/by-feature/{featureId}/count
+     →  returns paginated CloudTestRun[] sorted newest first plus the exact total
 
-  Renders a table of runs (provider, status, passed/failed counts, date)
+  Run-history queries use `staleTime: 0` and `refetchOnMount: 'always'`, overriding
+  the application's normal five-minute cache. The execution store also invalidates
+  the feature's run-list/count query when an execution stream ends, including aborted
+  or errored runs. This prevents a newly-created run from remaining hidden in cache.
+
+  Renders the first 25 runs (provider, status, passed/failed counts, date)
+  "Load more" fetches later pages until every saved run is visible
   Each row click  →  router.navigate({ to: '/app/execute', search: { runId, featureId, projectId } })
 ```
 
@@ -617,6 +829,20 @@ Each test case: `{ test_key, title, goal, description, category, priority, expec
 
 **Default model:** `claude-haiku-4-5` (cost-optimised for text generation).
 
+### ProjectContextLearnerAgent
+**File:** `backend/agents/project_context_learner_agent.py`
+
+Runs once after a non-aborted cloud-backed suite. Despite the historical class name, it
+maintains both scopes in one classification pass:
+
+- Rewrites the complete `Feature.context_summary`, preserving its existing source-derived
+  description and adding concise bullets for newly observed feature behavior.
+- Rewrites `Project.context_summary` only when the run established a durable capability or
+  fact useful outside this feature; at most two short global additions are allowed.
+- Treats explicit operator corrections as authoritative, but excludes supplied personal or
+  secret values, transient UI/session state, test outcomes, and run narration.
+- Deduplicates both summaries instead of appending raw run logs indefinitely.
+
 ### DocumentContextRetrieverAgent
 **File:** `backend/agents/document_context_retriever_agent.py`
 
@@ -635,11 +861,16 @@ Production execution agent. Uses Anthropic's native Computer Use beta to control
 **Key behaviours:**
 - Accepts an optional `system_prompt` at init (the rich `cu_system_prompt` built from project + feature context)
 - `start(goal, screenshot_bytes)` — begins a task, returns `ClaudeCUResponse`
-- `step(tool_use_ids, screenshot_bytes)` — continues after executing actions; accepts a list of `tool_use_id`s (one per action in the previous response) and sends them all back with the same final screenshot
+- `step(tool_use_ids, screenshot_bytes, tool_errors=None)` — continues after executing actions; accepts a list of `tool_use_id`s (one per action in the previous response), sends them all back with the same final screenshot, and returns blocked or failed actions as error tool results
 - `inject_guidance(text)` — queues operator guidance to be sent in the next `step()` call as a top-level user message text block
+- Exposes `set_text_field({ coordinate, field_label, value })`,
+  `request_user_input({ message })`, and `complete_test_execution(...)` alongside
+  `computer` during the interactive loop; parsed requests/results are returned on
+  `ClaudeCUResponse`
+- `answer_user_input(tool_use_id, value)` — appends the operator's value as the matching custom-tool result in the same `self.messages` conversation, then calls Claude again
 - Runs synchronous Anthropic API calls via `await asyncio.to_thread()` to avoid blocking the FastAPI event loop (critical for pause/abort to work)
 - Maintains the complete per-test Anthropic message history in `self.messages`; every `_call()` resends that history, including previous screenshot tool results
-- When `CLAUDE_CU_DEBUG_MESSAGES=true`, logs the sanitized request structure before each API call and response token usage afterward. Base64 image data is replaced by size metadata, but text goals and operator guidance remain visible and may be sensitive.
+- When `CLAUDE_CU_DEBUG_MESSAGES=true`, logs the sanitized request structure before each API call and response token usage afterward. Base64 image data and values supplied through `request_user_input` are redacted, but other text goals and operator guidance remain visible and may be sensitive.
 - Enables Anthropic's automatic five-minute prompt cache on every Computer Use request via `cache_control={"type": "ephemeral"}`. Live verification showed `cache_read_input_tokens` increasing on later turns, confirming that the growing conversation prefix is served as discounted cache reads.
 
 **Default model:** `claude-haiku-4-5`
@@ -649,13 +880,59 @@ Production execution agent. Uses Anthropic's native Computer Use beta to control
 **Multi-action batching (`BATCHING_INSTRUCTIONS` constant):**
 
 A module-level constant `BATCHING_INSTRUCTIONS` is defined in this file and appended to both `DEFAULT_SYSTEM_PROMPT` (fallback) and the runtime-built `cu_system_prompt` in `main.py`. It instructs Claude to:
-- Pack multiple confident actions into one response (e.g. click field + type + press Enter = 1 API call instead of 3)
+- Pack multiple confident actions into one response (for example, fill several already
+  visible fields with separate `set_text_field` calls)
 - Return only 1 action when the next step depends on visual feedback (navigation, form submit, modal trigger)
 - Use the native `screenshot` action for an explicit mid-sequence visual checkpoint
 
-The execution loop in `main.py` already handles N actions per turn — it iterates `cu_response.actions`, executes each, collects all `tool_use_id`s, then calls `agent.step(all_ids, one_screenshot)` once. **No loop code changes were needed; only the prompt changes.**
+The execution loop in `main.py` handles N actions per turn: it iterates
+`cu_response.actions`, executes each, collects all `tool_use_id`s, then calls
+`agent.step(all_ids, one_screenshot)` once. If an action fails, its own tool result is
+returned to Claude as text with `is_error: true`; later actions in that batch are not
+executed and receive dependent-error results instead of false success screenshots.
 
 Each action in a batch still gets its own individual `StepRecord` in the DB (own `step_number`, `timestamp`, `success`, `error`). All actions in the same turn share the same `reasoning`/`description` text since that comes from `cu_response.thinking` (per-turn, not per-action).
+
+**Operator input (`USER_INPUT_INSTRUCTIONS` + `REQUEST_USER_INPUT_TOOL`):**
+
+Both the fallback `DEFAULT_SYSTEM_PROMPT` and the runtime-built prompt in `main.py`
+include the shared `USER_INPUT_INSTRUCTIONS` constant. `_configure_screenshot_space()`
+places `REQUEST_USER_INPUT_TOOL` next to the native Computer Use tool. This makes the
+tool available from the first screenshot through every later turn of a test.
+
+**Atomic text-field editing (`FORM_EDITING_INSTRUCTIONS` + `SET_TEXT_FIELD_TOOL`):**
+
+Both prompts tell Claude that it is controlling macOS and to use `Command`, not
+`Control`, for standard editing shortcuts. Generic `computer` key actions are validated
+against the keys supported by PyAutoGUI and may contain only one key or one chord;
+malformed strings that combine sequential operations are returned to Claude as action
+errors rather than being treated as successful input.
+
+For the common clear-or-replace operation, Claude uses one custom call:
+
+```json
+{
+  "name": "set_text_field",
+  "input": {
+    "coordinate": [640, 412],
+    "field_label": "Email",
+    "value": "person@example.com"
+  }
+}
+```
+
+`coordinate` is the field centre in Claude's current screenshot. The agent passes it
+through the same screenshot-to-window coordinate conversion used by native Computer Use
+clicks; the executor then adds the selected window's screen offset. The backend performs
+one click, `Command+A`, Backspace, and (unless `value` is empty) types the full value.
+An empty string therefore clears the field. `field_label` identifies the intended field
+in logs and provenance checks; the coordinate remains the actual click target.
+
+This keeps the multi-step editing mechanics inside Clariti while still producing one
+tool result for Claude. The existing sensitive-input guard still decides whether the
+provided value came from project/test memory, the goal, explicit fake-data instructions,
+or an operator answer. Focus leases and screenshot-based no-op detection are not part of
+this implementation.
 
 ---
 
@@ -676,9 +953,10 @@ Each action in a batch still gets its own individual `StepRecord` in the DB (own
 | `/feature/{id}/execute/pause` | POST | Signal backend to pause after current step |
 | `/feature/{id}/execute/resume` | POST | Resume a paused execution (optional guidance) |
 | `/feature/{id}/execute/abort` | POST | Abort execution loop immediately |
+| `/feature/{id}/execute/input/{request_id}` | POST | Answer Claude's active `request_user_input` tool call with `{ execution_id, value }` |
 | `/feature/{id}/execute/{test_id}/guidance` | POST | Inject user guidance when agent is stuck |
 
-All SSE endpoints stream `data: { event, ...payload }\n\n` lines. Execution additionally emits non-fatal `context_learning`, `context_learned`, and `context_learning_warning` events after suite tests finish.
+All SSE endpoints stream `data: { event, ...payload }\n\n` lines. Execution can emit `input_required` while Claude is waiting for an operator value, and additionally emits non-fatal `context_learning`, `context_learned`, and `context_learning_warning` events after suite tests finish.
 
 **`backend/cloud_client.py` — helpers for test run persistence:**
 
@@ -697,6 +975,7 @@ All SSE endpoints stream `data: { event, ...payload }\n\n` lines. Execution addi
 | `pause_guidance` | Optional guidance text to inject on resume |
 | `guidance_events` | `asyncio.Event` the loop awaits when agent is stuck |
 | `guidance_text` | Guidance text submitted by user for stuck agent |
+| `pending_user_inputs` | Pending Claude custom-tool calls keyed by tool-use/request ID; holds run/context/test identity, `asyncio.Event`, answer, and cancellation state |
 | `active_execution_ids` | Maps reusable `context_id`/feature ID to the currently active unique `execution_id` |
 | `abort_flags` | Abort metadata keyed by unique `execution_id`; prevents an old run's abort from cancelling a newer run |
 
@@ -848,6 +1127,9 @@ All React Query hooks live in `src/hooks/useProjectsQueries.ts`:
 
   // Guided execution
   guidanceNeeded: { testId, question, currentState, confidence? } | null;
+  waitingForInput: { executionId, requestId, testId, message } | null;
+  isInputSubmitting: boolean;
+  inputError: string | null;
   isPaused: boolean;
   isPausePending: boolean;   // true from button press until backend confirms pause
   isAbortPending: boolean;   // true from button press until backend confirms abort
@@ -857,6 +1139,7 @@ All React Query hooks live in `src/hooks/useProjectsQueries.ts`:
 **Key actions:**
 - `setInitialTests(testCases)` — seeds `tests[]` with status `"pending"` (live mode)
 - `startExecution(params)` — opens SSE stream, handles all events
+- `submitRequestedInput(value)` — answers the active request using its execution/request IDs, then clears the input panel after the backend accepts it
 - `loadPastRun(testCases, runDetail)` — **replay mode**: populates `tests[]` and `activityLog` from API data, resets all live-execution state
 - `reset()` — clears everything back to idle
 
@@ -1134,3 +1417,184 @@ sudo tccutil reset ScreenCapture
 sudo tccutil reset Accessibility
 ```
 After running, macOS will show the native permission dialogs again on next use.
+
+---
+
+## Future ToDos
+
+### Private Visual Workspace / Remote Mac Worker
+
+**Status:** Product and architecture direction only; not implemented.
+
+#### Problem to solve
+
+Clariti currently shares the user's active desktop. At the start of a run it resolves the
+selected window and retains that window's bounds. Screenshots are then captured from that
+physical screen rectangle with `mss`, and Claude's window-local coordinates are translated
+into global desktop coordinates and executed with `pyautogui`.
+
+This means the target must remain visible, stationary, and focused enough for the entire
+run. Covering or moving the target, switching applications or macOS Spaces, changing the
+display arrangement, or allowing another application to receive keyboard focus can make
+Clariti observe or operate the wrong UI. A local run also cannot continue if the user's Mac
+goes to sleep after its lid is closed.
+
+#### Product principle that must be preserved
+
+Clariti's purpose is to behave like a human QA operator:
+
+- See the rendered application as pixels.
+- Reason from what is visibly happening rather than from test selectors or internal state.
+- Use mouse, keyboard, scroll, and touch-like actions.
+- Remember prior observations and corrections.
+- Ask the user when required information is unavailable.
+
+Do **not** turn Clariti's reasoning layer into separate browser, Android, and iOS test
+frameworks. In particular, the primary agent should not depend on DOM selectors,
+accessibility identifiers, test IDs, XCUITest element queries, or Android view hierarchies
+to understand and verify behavior. That would make Clariti another semantic automation
+framework and undermine the human-QA product direction.
+
+Some low-level transport is unavoidable: software still needs an equivalent of a human's
+eyes and hands. The acceptable boundary is therefore:
+
+```text
+Allowed transport primitives       Avoid as reasoning primitives
+----------------------------       -----------------------------
+latest framebuffer/screenshot      DOM selectors and DOM assertions
+mouse move/click at x,y             accessibility/test identifiers
+keyboard input                     platform-specific element queries
+scroll or touch gesture             application-internal test hooks
+```
+
+#### Proposed solution
+
+Give Clariti its own isolated visual computer instead of letting it borrow the user's
+active desktop.
+
+```text
+ClaudeComputerUseAgent
+        |
+        | screenshots in; visual actions out
+        v
+VisualComputer interface
+  - get_screenshot()
+  - click(x, y)
+  - type(text)
+  - press(keys)
+  - scroll(...)
+  - swipe(...)             # where supported
+        |
+        v
+Private Clariti workspace
+  - normal browser
+  - Android emulator
+  - iOS Simulator
+  - native desktop application
+```
+
+The application under test remains rendered normally inside the workspace. Claude sees
+the workspace framebuffer and controls its virtual mouse and keyboard exactly as it sees
+and controls the user's screen today. The target application does not need to expose its
+semantic structure to the agent.
+
+The existing Claude conversation, test prompts, memory injection, requested-user-input
+tool, multi-test verification, execution logging, and post-run learning remain above this
+boundary and should require little or no behavioral change.
+
+#### Remote Mac Mini direction
+
+The strongest general implementation is a dedicated remote Mac worker (a Mac mini during
+early development, and potentially provisioned Mac workers later):
+
+```text
+Clariti desktop app
+  - creates a run
+  - sends test context/build/target details
+  - shows progress and optional live screen
+  - allows pause, guidance, requested input, and takeover
+            |
+            v
+Remote Clariti worker
+  - owns an independent macOS login/desktop session
+  - launches the browser, Simulator, or native application
+  - captures the desktop/application framebuffer
+  - accepts raw coordinate and keyboard actions
+  - runs the existing local execution backend and Claude loop
+  - streams run events, screenshots, and artifacts back
+```
+
+This isolates Clariti's focus, cursor, keyboard, windows, and display geometry from the
+user's computer. It also allows a run to continue when the user's laptop is closed, makes
+parallel runs possible later, and makes it possible to retain the entire failed workspace
+for debugging.
+
+For maximum application independence, communication with the remote workspace should be
+based on a remote-framebuffer/KVM-style channel: pixels flow to the agent and raw virtual
+input flows to the worker. Platform APIs may be used for provisioning, installing builds,
+launching applications, and transporting input/output, but not as a substitute for the
+agent visually understanding the product.
+
+#### Execution modes
+
+Clariti can eventually expose three explicit modes:
+
+1. **Current Screen** — existing local `mss` + `pyautogui` compatibility mode. The target
+   must stay visible and the run should detect interference and pause safely.
+2. **Private Local Workspace** — a local VM with its own framebuffer and virtual input.
+   The user can continue working, but the run stops if the host sleeps.
+3. **Remote Workspace** — a dedicated remote machine. Supports unattended and
+   closed-laptop execution and is the intended long-term default.
+
+All three modes should implement the same small `VisualComputer` interface so the Claude
+agent remains platform-agnostic.
+
+#### Suggested delivery sequence
+
+1. **Protect the existing mode.** Resolve the selected window by stable window ID before
+   each turn, refresh its bounds, and verify that it is safe to act. Pause instead of
+   clicking when the window is missing, moved to an unavailable Space, minimized, or no
+   longer the intended target.
+2. **Extract `VisualComputer`.** Move screenshot and raw input operations out of
+   `execute_claude_action()` into an interface. Implement the current behavior as
+   `ForegroundMacVisualComputer` without changing Claude's tool schema.
+3. **Build a remote-worker proof of concept.** Use one dedicated Mac mini with one
+   isolated Clariti account/session. Start a normal browser in that desktop, capture its
+   pixels, and execute Claude's raw mouse/keyboard actions remotely. Do not introduce DOM
+   selectors during this proof.
+4. **Stream observability and control.** Show the remote screen in Clariti, stream the
+   existing SSE activity, and support pause, guidance, requested input, abort, and optional
+   human takeover.
+5. **Add build/application provisioning.** Support opening a URL, installing an `.app`,
+   booting an iOS Simulator and installing a build, and preparing other targets. These are
+   workspace setup operations; the actual test remains visual.
+6. **Harden isolation and cleanup.** Give each run a clean or intentionally persistent
+   workspace, protect credentials, apply time limits, collect screenshots/video/logs, and
+   restore or destroy the workspace after completion.
+7. **Scale only after the interaction loop is proven.** Add a worker queue, health and
+   capacity reporting, parallel machines, retries, and eventually dynamically provisioned
+   Mac workers.
+
+#### Important design questions for the proof of concept
+
+- Whether each run receives a fresh macOS user/VM or reuses a persistent workspace.
+- How login cookies and company credentials persist without leaking between projects.
+- How local-development websites become reachable from the remote worker (secure tunnel,
+  preview deployment, or user-configured URL).
+- How builds are signed, uploaded, installed, and removed.
+- Whether the first Mac mini supports one active run or several isolated sessions.
+- What framebuffer/remote-input protocol gives low-latency screenshots and reliable
+  coordinate mapping without depending on the worker's visible monitor.
+- How the operator can watch and temporarily take over without racing the Claude agent.
+- Which artifacts are retained after a run and for how long.
+
+#### Proof-of-concept success criteria
+
+- Claude completes an existing visual website test on the remote Mac without DOM access.
+- The user's local Mac can freely switch windows and Spaces without affecting the run.
+- The local Clariti window can be minimized while execution continues.
+- Requested input and pause-and-guide still resume the same Claude conversation.
+- Screenshot-relative coordinates remain stable throughout the run.
+- The remote run continues after the user's laptop disconnects or sleeps.
+- The same agent/tool protocol can operate a normal browser and an iOS Simulator window
+  without changing its reasoning instructions.

@@ -24,6 +24,9 @@ class TestRunService:
         )
         return [doc_to_dict(d) for d in cursor]
 
+    def count_by_feature(self, db: Database, *, feature_id: str) -> int:
+        return db[self.COL].count_documents({"feature_id": feature_id})
+
     def get_multi_by_user(self, db: Database, *, user_id: str, skip: int = 0, limit: int = 50) -> List[dict]:
         cursor = (
             db[self.COL]

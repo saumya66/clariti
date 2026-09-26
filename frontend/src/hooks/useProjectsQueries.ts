@@ -1,5 +1,6 @@
 import {
   useQuery,
+  useInfiniteQuery,
   useMutation,
   useQueryClient,
 } from '@tanstack/react-query';
@@ -19,6 +20,7 @@ import {
   saveFeatureTests,
   updateProjectContext,
   listTestRunsByFeature,
+  countTestRunsByFeature,
   getTestRunDetail,
   type CloudContextUpdateCallbacks,
   type Project,
@@ -321,20 +323,50 @@ export function testRunsQueryKey(featureId: string) {
   return ['features', featureId, 'test-runs'] as const;
 }
 
+const TEST_RUNS_PAGE_SIZE = 25;
+
 export function useFeatureTestRuns(featureId: string | undefined) {
   const token = useAuthStore((s) => s.token);
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: testRunsQueryKey(featureId ?? ''),
-    queryFn: () => listTestRunsByFeature(featureId!),
+  const countQuery = useQuery({
+    queryKey: [...testRunsQueryKey(featureId ?? ''), 'count'] as const,
+    queryFn: () => countTestRunsByFeature(featureId!),
     enabled: !!token && !!featureId,
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
+  const runsQuery = useInfiniteQuery({
+    queryKey: testRunsQueryKey(featureId ?? ''),
+    queryFn: ({ pageParam }) => listTestRunsByFeature(
+      featureId!,
+      pageParam,
+      TEST_RUNS_PAGE_SIZE
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((total, page) => total + page.length, 0);
+      if (countQuery.data !== undefined && loaded >= countQuery.data) return undefined;
+      return lastPage.length === TEST_RUNS_PAGE_SIZE ? loaded : undefined;
+    },
+    enabled: !!token && !!featureId,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
+  const runs = runsQuery.data?.pages.flat() ?? [];
+
   return {
-    runs: (data ?? []) as CloudTestRun[],
-    loading: isLoading,
-    error: error?.message ?? null,
-    refetch,
+    runs: runs as CloudTestRun[],
+    totalRuns: countQuery.data ?? runs.length,
+    loading: runsQuery.isLoading || countQuery.isLoading,
+    loadingMore: runsQuery.isFetchingNextPage,
+    hasMore: runsQuery.hasNextPage,
+    error: runsQuery.error?.message ?? countQuery.error?.message ?? null,
+    loadMore: runsQuery.fetchNextPage,
+    refetch: async () => {
+      await Promise.all([runsQuery.refetch(), countQuery.refetch()]);
+    },
   };
 }
 

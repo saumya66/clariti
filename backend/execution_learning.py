@@ -1,10 +1,11 @@
-"""Pure helpers for preparing durable project-context learning inputs."""
+"""Pure helpers for preparing and persisting scoped execution learnings."""
 
 from typing import Any, Callable, Optional
 
 
 MAX_STEPS_PER_TEST = 60
 MAX_TEXT_CHARS = 1200
+MAX_OPERATOR_CORRECTIONS_PER_TEST = 20
 
 
 def _compact_text(value: Any) -> str:
@@ -27,8 +28,9 @@ def build_suite_learning_log(
     status: str,
     conclusion: str,
     steps: list[dict[str, Any]],
+    operator_corrections: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Build a bounded, text-only record for project-context learning."""
+    """Build a bounded, text-only record for feature/project context learning."""
     compact_steps = [
         {
             "step_number": step.get("step_number"),
@@ -49,6 +51,13 @@ def build_suite_learning_log(
         "expected_result": _compact_text(test_case.get("expected_result")),
         "status": status,
         "conclusion": _compact_text(conclusion),
+        "operator_corrections": [
+            _compact_text(correction)
+            for correction in (operator_corrections or [])[
+                -MAX_OPERATOR_CORRECTIONS_PER_TEST:
+            ]
+            if str(correction or "").strip()
+        ],
         "steps": compact_steps,
     }
 
@@ -57,47 +66,109 @@ def should_run_context_learning(
     *,
     logs: list[dict[str, Any]],
     aborted: bool,
-    project_id: Optional[str],
+    feature_id: Optional[str],
     cloud_token: Optional[str],
 ) -> bool:
-    """Return whether a completed suite has enough data to update its project."""
-    if aborted or not project_id or not cloud_token:
+    """Return whether a completed suite has enough data to update its feature."""
+    if aborted or not feature_id or not cloud_token:
         return False
-    return any(log.get("conclusion") or log.get("steps") for log in logs)
+    return any(
+        log.get("conclusion")
+        or log.get("steps")
+        or log.get("operator_corrections")
+        for log in logs
+    )
 
 
-def learn_and_update_project(
+def learn_and_update_contexts(
     *,
     learner: Any,
+    update_feature: Callable[..., Optional[dict]],
     update_project: Callable[..., Optional[dict]],
-    project_id: str,
+    feature_id: str,
+    project_id: Optional[str],
     cloud_token: str,
     project_context: str,
     feature_context: str,
     logs: list[dict[str, Any]],
-) -> dict[str, str]:
-    """Generate a revised context and persist it through the cloud client."""
-    learner_result = learner.update_project_context(
+) -> dict[str, Any]:
+    """Revise feature context first, then persist any global project refinement."""
+    learner_result = learner.update_contexts(
         project_context,
         feature_context,
         logs,
-    )
-    updated_context = (
-        (learner_result or {}).get("updated_project_context") or ""
+    ) or {}
+    updated_feature_context = str(
+        learner_result.get("updated_feature_context") or ""
     ).strip()
-    change_summary = ((learner_result or {}).get("change_summary") or "").strip()
-    if not updated_context:
-        raise ValueError("Learner returned nfffo updated project context")
+    if not updated_feature_context:
+        raise ValueError("Learner returned no updated feature context")
 
-    updated_project = update_project(
-        project_id,
-        token=cloud_token,
-        context_summary=updated_context,
+    # Never erase established project knowledge because a model omitted the field.
+    raw_project_context = learner_result.get("updated_project_context")
+    updated_project_context = (
+        str(raw_project_context).strip()
+        if raw_project_context is not None
+        else project_context.strip()
     )
-    if not updated_project:
-        raise RuntimeError("Cloud project context update failed")
+    if project_context.strip() and not updated_project_context:
+        updated_project_context = project_context.strip()
+
+    feature_changed = updated_feature_context != feature_context.strip()
+    project_changed = updated_project_context != project_context.strip()
+    feature_change_summary = str(
+        learner_result.get("feature_change_summary") or ""
+    ).strip()
+    project_change_summary = str(
+        learner_result.get("project_change_summary") or ""
+    ).strip()
+
+    if feature_changed:
+        updated_feature = update_feature(
+            feature_id,
+            token=cloud_token,
+            context_summary=updated_feature_context,
+        )
+        if not updated_feature:
+            raise RuntimeError("Cloud feature context update failed")
+
+    project_warning = ""
+    project_updated = False
+    if project_changed:
+        if not project_id:
+            project_warning = "Feature context updated, but project ID was unavailable."
+        else:
+            try:
+                updated_project = update_project(
+                    project_id,
+                    token=cloud_token,
+                    context_summary=updated_project_context,
+                )
+                if not updated_project:
+                    raise RuntimeError("Cloud project context update failed")
+                project_updated = True
+            except Exception as exc:
+                feature_state = (
+                    "Feature context was updated"
+                    if feature_changed
+                    else "Feature context was already up to date"
+                )
+                project_warning = (
+                    f"{feature_state}, but project context could not be updated: {exc}"
+                )
+
+    summaries = [summary for summary in (
+        feature_change_summary if feature_changed else "",
+        project_change_summary if project_updated else "",
+    ) if summary]
 
     return {
-        "updated_project_context": updated_context,
-        "change_summary": change_summary,
+        "updated_feature_context": updated_feature_context,
+        "updated_project_context": updated_project_context,
+        "feature_updated": feature_changed,
+        "project_updated": project_updated,
+        "feature_change_summary": feature_change_summary,
+        "project_change_summary": project_change_summary,
+        "change_summary": " ".join(summaries),
+        "warning": project_warning,
     }

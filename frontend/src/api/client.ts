@@ -794,6 +794,9 @@ export interface TestCompleteEvent {
   status: 'passed' | 'failed';
   steps_executed: number;
   conclusion?: string;
+  test_number?: number;
+  opportunistic?: boolean;
+  verified_during_test_id?: string;
 }
 
 export interface SuiteCompleteEvent {
@@ -817,7 +820,11 @@ export interface ContextLearningEvent {
 export interface ContextLearnedEvent {
   event: 'context_learned';
   updated: boolean;
+  feature_updated?: boolean;
+  project_updated?: boolean;
   change_summary?: string;
+  feature_change_summary?: string;
+  project_change_summary?: string;
 }
 
 export interface ContextLearningWarningEvent {
@@ -1481,11 +1488,23 @@ export interface CloudTestRunDetail extends CloudTestRun {
   results: CloudTestResult[];
 }
 
-export async function listTestRunsByFeature(featureId: string): Promise<CloudTestRun[]> {
+export async function listTestRunsByFeature(
+  featureId: string,
+  skip: number = 0,
+  limit: number = 25
+): Promise<CloudTestRun[]> {
   const response = await cloudApiClient.get<CloudTestRun[]>(
-    `/api/v1/test-runs/by-feature/${featureId}`
+    `/api/v1/test-runs/by-feature/${featureId}`,
+    { params: { skip, limit } }
   );
   return response.data;
+}
+
+export async function countTestRunsByFeature(featureId: string): Promise<number> {
+  const response = await cloudApiClient.get<{ total: number }>(
+    `/api/v1/test-runs/by-feature/${featureId}/count`
+  );
+  return response.data.total;
 }
 
 export async function getTestRunDetail(runId: string): Promise<CloudTestRunDetail> {

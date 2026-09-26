@@ -29,6 +29,12 @@ import { useAuthStore } from '@/store/authStore';
 import { useFeatureTestCases, useTestRunDetail } from '@/hooks/useProjectsQueries';
 import { useTestSuiteExecutionStore, type TestRunStatus, type ActivityEntry } from '@/store/testSuiteExecutionStore';
 import { cn } from '@/lib/utils';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { z } from 'zod';
 
 export const Route = createFileRoute('/app/execute')({
@@ -560,7 +566,7 @@ function ExecutePage() {
               : 'border-primary/20 bg-primary/5 text-primary'
           )}>
             {projectLearningStatus === 'learning'
-              ? 'Updating project knowledge...'
+              ? 'Updating feature and project knowledge...'
               : projectLearningMessage}
           </div>
         )}
@@ -583,53 +589,69 @@ function ExecutePage() {
 
         {/* Test rows */}
         <div className="flex-1 overflow-y-auto py-2">
-          {tests.map((test) => {
-            const isSelected = displayedTestId === test.id;
-            const isClickable = test.status !== 'pending';
-            return (
-              <button
-                key={test.id}
-                disabled={!isClickable}
-                onClick={() => {
-                  if (!isClickable) return;
-                  // Toggle: clicking the already-selected test while running snaps back to live
-                  if (isSelected && isRunning) {
-                    setSelectedTestId(null);
-                  } else {
-                    setSelectedTestId(test.id);
-                  }
-                }}
-                className={cn(
-                  'flex w-full items-center gap-3 border-l-2 px-5 py-2.5 text-left transition-colors',
-                  isSelected
-                    ? 'border-l-violet-500 bg-violet-500/10'
-                    : test.status === 'running'
-                    ? 'border-l-violet-500 bg-violet-500/5'
-                    : test.status === 'failed'
-                    ? 'border-l-red-500/60 hover:bg-[#fafafd]'
-                    : test.status === 'passed'
-                    ? 'border-l-emerald-500/40 hover:bg-[#fafafd]'
-                    : 'border-l-transparent cursor-default',
-                  isClickable && !isSelected && 'cursor-pointer'
-                )}
-              >
-                <span className="font-mono text-[10px] font-semibold text-muted-foreground w-12 shrink-0">
-                  {test.test_key}
-                </span>
-                <span className={cn(
-                  'flex-1 text-xs truncate',
-                  isSelected        ? 'text-primary font-semibold' :
-                  test.status === 'running' ? 'text-primary font-semibold' :
-                  test.status === 'passed'  ? 'text-foreground' :
-                  test.status === 'failed'  ? 'text-red-500 font-medium' :
-                  'text-muted-foreground'
-                )}>
-                  {test.title}
-                </span>
-                <StatusIcon status={test.status} />
-              </button>
-            );
-          })}
+          <TooltipProvider delayDuration={250}>
+            {tests.map((test) => {
+              const isSelected = displayedTestId === test.id;
+              const isClickable = test.status !== 'pending';
+              return (
+                <Tooltip key={test.id}>
+                  <TooltipTrigger asChild>
+                    <div className="w-full" tabIndex={isClickable ? -1 : 0}>
+                      <button
+                        disabled={!isClickable}
+                        aria-label={`${test.test_key}: ${test.title}`}
+                        onClick={() => {
+                          if (!isClickable) return;
+                          // Toggle: clicking the already-selected test while running snaps back to live
+                          if (isSelected && isRunning) {
+                            setSelectedTestId(null);
+                          } else {
+                            setSelectedTestId(test.id);
+                          }
+                        }}
+                        className={cn(
+                          'flex w-full items-center gap-3 border-l-2 px-5 py-2.5 text-left transition-colors',
+                          isSelected
+                            ? 'border-l-violet-500 bg-violet-500/10'
+                            : test.status === 'running'
+                            ? 'border-l-violet-500 bg-violet-500/5'
+                            : test.status === 'failed'
+                            ? 'border-l-red-500/60 hover:bg-[#fafafd]'
+                            : test.status === 'passed'
+                            ? 'border-l-emerald-500/40 hover:bg-[#fafafd]'
+                            : 'border-l-transparent cursor-default',
+                          isClickable && !isSelected && 'cursor-pointer'
+                        )}
+                      >
+                        <span className="font-mono text-[10px] font-semibold text-muted-foreground w-12 shrink-0">
+                          {test.test_key}
+                        </span>
+                        <span className={cn(
+                          'flex-1 text-xs truncate',
+                          isSelected        ? 'text-primary font-semibold' :
+                          test.status === 'running' ? 'text-primary font-semibold' :
+                          test.status === 'passed'  ? 'text-foreground' :
+                          test.status === 'failed'  ? 'text-red-500 font-medium' :
+                          'text-muted-foreground'
+                        )}>
+                          {test.title}
+                        </span>
+                        <StatusIcon status={test.status} />
+                      </button>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="right"
+                    align="center"
+                    sideOffset={8}
+                    className="max-w-80 whitespace-normal break-words text-left leading-relaxed"
+                  >
+                    {test.title}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </TooltipProvider>
         </div>
 
         {/* Actions footer */}
@@ -740,6 +762,11 @@ function ExecutePage() {
                 {displayedTest.status === 'passed' && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 border border-emerald-500/20">
                     <CheckCircle2 className="size-3" /> Passed
+                  </span>
+                )}
+                {displayedTest.verified_during_test_id && (
+                  <span className="inline-flex items-center rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-600 border border-violet-500/20">
+                    Verified during {displayedTest.verified_during_test_id}
                   </span>
                 )}
                 {displayedTest.status === 'failed' && (

@@ -36,6 +36,16 @@ def list_test_runs(
     return [TestRun(**d) for d in docs]
 
 
+@router.get("/by-feature/{feature_id}/count")
+def count_test_runs(
+    feature_id: str,
+    db: Database = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    _verify_feature_owner(db, feature_id, current_user["id"])
+    return {"total": test_run_service.count_by_feature(db, feature_id=feature_id)}
+
+
 @router.get("/by-user", response_model=List[TestRun])
 def list_test_runs_by_user(
     skip: int = 0,

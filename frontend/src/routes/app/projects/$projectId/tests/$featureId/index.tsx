@@ -29,6 +29,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
 import { useProject, useProjectFeatures, useFeatureTestCases, useFeatureTestRuns } from '@/hooks/useProjectsQueries';
 import { useWindows } from '@/hooks';
@@ -327,8 +329,9 @@ function FeatureDetailPage() {
   const { project } = useProject(projectId);
   const { features } = useProjectFeatures(projectId);
   const { testCases, loading, error } = useFeatureTestCases(featureId);
-  const { runs } = useFeatureTestRuns(featureId);
+  const { runs, totalRuns } = useFeatureTestRuns(featureId);
   const [runModalOpen, setRunModalOpen] = React.useState(false);
+  const [fullContextOpen, setFullContextOpen] = React.useState(false);
 
   const feature = features.find((f) => f.id === featureId);
   const lastRun = runs[0] ?? null;
@@ -549,6 +552,14 @@ function FeatureDetailPage() {
                     <p className="text-xs text-muted-foreground leading-relaxed line-clamp-5">
                       {feature.context_summary}
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => setFullContextOpen(true)}
+                      className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-violet-600 transition-colors hover:text-violet-700"
+                    >
+                      View full context
+                      <ChevronRight className="size-3.5" />
+                    </button>
                   </div>
                 )}
 
@@ -577,10 +588,10 @@ function FeatureDetailPage() {
 
               <div className="mb-4">
                 <span className="text-5xl font-light text-foreground tabular-nums tracking-tighter leading-none">
-                  {runs.length}
+                  {totalRuns}
                 </span>
                 <span className="ml-2 text-sm font-medium text-muted-foreground">
-                  {runs.length === 1 ? 'run' : 'runs'}
+                  {totalRuns === 1 ? 'run' : 'runs'}
                 </span>
               </div>
 
@@ -639,6 +650,24 @@ function FeatureDetailPage() {
         testCount={testCases.length}
         onStart={handleStartExecution}
       />
+
+      <Dialog open={fullContextOpen} onOpenChange={setFullContextOpen}>
+        <DialogContent className="max-h-[80vh] max-w-2xl gap-0 overflow-hidden p-0">
+          <DialogHeader className="shrink-0 border-b border-[#ececf1] px-6 py-5">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-violet-600">
+              AI generated · {feature?.name ?? 'Test Suite'}
+            </p>
+            <DialogTitle className="font-serif text-2xl font-light">
+              Feature Context Summary
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto px-6 py-5">
+            <p className="whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
+              {feature?.context_summary}
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

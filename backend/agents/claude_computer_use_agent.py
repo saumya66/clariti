@@ -100,10 +100,11 @@ BATCHING_INSTRUCTIONS = (
     "PACK MULTIPLE ACTIONS INTO ONE RESPONSE — but ONLY when you are confident you "
     "know the exact next steps from the current screenshot without needing to see "
     "intermediate UI state. Examples of safe batches:\n"
-    "- Click a field + type text + press Tab or Enter (3 actions, 1 turn)\n"
-    "- Clear and retype a field: triple_click → type new value (2 actions, 1 turn)\n"
-    "- Sequential keyboard shortcuts: Cmd+A → Backspace → type (3 actions, 1 turn)\n"
-    "- Fill multiple form fields whose positions you can already see in the current screenshot\n\n"
+    "- Clear or replace a field with `set_text_field` (1 action, 1 turn)\n"
+    "- Fill multiple form fields with one `set_text_field` call per field when all "
+    "positions are already certain\n"
+    "- Use multiple separate `computer` key actions in one response for a known "
+    "sequence that is not a whole-field replacement\n\n"
     "RETURN ONLY 1 ACTION and wait for a fresh screenshot when:\n"
     "- You are not fully confident what the next step will be after this action\n"
     "- The action will change the page or open a modal (navigation, form submit, dialog trigger)\n"
@@ -114,18 +115,45 @@ BATCHING_INSTRUCTIONS = (
     "Returning one action per response when the entire sequence is already obvious is wasteful and slow."
 )
 
+FORM_EDITING_INSTRUCTIONS = (
+    "\n\nMACOS KEYBOARD AND FORM EDITING:\n"
+    "You are controlling macOS. Use Command, not Control, for standard macOS "
+    "shortcuts. A `computer` key action must contain exactly one key or one chord "
+    "such as `CMD+A`; never combine sequential operations into one key string. "
+    "When you need to clear or replace the complete value of a visible text field, "
+    "use `set_text_field` instead of manually clicking, selecting, deleting, and "
+    "typing. Give the field's center coordinate from the current screenshot, its "
+    "visible label, and the complete desired value. Use an empty value to clear it. "
+    "You may call `set_text_field` for multiple visible fields in one response when "
+    "their locations are already certain. Never refresh, go back, or navigate away "
+    "merely to recover from a text-editing mistake."
+)
+
 USER_INPUT_INSTRUCTIONS = (
     "\n\nREQUESTING INPUT FROM THE OPERATOR:\n"
-    "You have a `request_user_input` tool. Use it when the application requires "
-    "an exact value that is not available in the test goal, project context, "
-    "project owner memory, or earlier operator messages. This includes OTPs, "
-    "passcodes, passwords, account email addresses, phone numbers, invite codes, "
-    "and other user-specific or company-specific values. Never invent or guess "
-    "such a value. Call `request_user_input` with a short, specific message telling "
-    "the operator what to enter. Do not call `computer` in the same response. Wait "
-    "for the tool result, then continue the test using the value the operator provided. "
+    "You have a `request_user_input` tool. The moment the application requires an "
+    "exact value that is not explicitly present in the test goal, project context, "
+    "project owner memory, or earlier operator messages, stop and call it. This "
+    "includes OTPs, verification codes, passcodes, passwords, names, email addresses, "
+    "phone numbers, postal addresses, PIN/postal codes, serial numbers, invite codes, "
+    "and other user-specific or company-specific values. Never invent, guess, or use "
+    "a plausible placeholder for these values. Never open an email inbox, SMS app, "
+    "password manager, or another service to retrieve an OTP or secret yourself; ask "
+    "the operator to provide it. Call `request_user_input` with a short, specific "
+    "message telling the operator what to enter. Do not call `computer` in the same "
+    "response. Wait for the tool result, then continue using the supplied value. "
     "You may still generate arbitrary input when the test explicitly asks for random, "
     "fake, invalid, or malformed data."
+)
+
+SUITE_VERIFICATION_INSTRUCTIONS = (
+    "\n\nPRIMARY TEST STOP CONDITION — CRITICAL:\n"
+    "Execute only the PRIMARY TEST in the task message. The instant its expected result "
+    "has been directly observed, stop taking computer actions and call "
+    "`complete_test_execution` as the only tool in your response. Do not continue into "
+    "later form steps, explore more of the application, or perform additional checks "
+    "after the primary expected result is satisfied. If the primary test cannot be "
+    "completed, call the same tool with failed status and explain the observed blocker."
 )
 
 REQUEST_USER_INPUT_TOOL = {
@@ -147,6 +175,86 @@ REQUEST_USER_INPUT_TOOL = {
     },
 }
 
+SET_TEXT_FIELD_TOOL = {
+    "name": "set_text_field",
+    "description": (
+        "Click a visible text field and atomically clear or replace its complete value. "
+        "Use this instead of manual select-all, delete, and type sequences."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The [x, y] center of the field in the current screenshot.",
+            },
+            "field_label": {
+                "type": "string",
+                "description": "The visible field label, such as Email or Phone.",
+            },
+            "value": {
+                "type": "string",
+                "description": "The complete desired value. Use an empty string to clear the field.",
+            },
+        },
+        "required": ["coordinate", "field_label", "value"],
+    },
+}
+
+COMPLETE_TEST_EXECUTION_TOOL = {
+    "name": "complete_test_execution",
+    "description": (
+        "Immediately finish the primary test as soon as its expected result is observed "
+        "or a definitive failure is reached."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "primary_status": {
+                "type": "string",
+                "enum": ["passed", "failed"],
+                "description": "The observed result of the primary test.",
+            },
+            "conclusion": {
+                "type": "string",
+                "description": "A concise evidence-based conclusion for the primary test.",
+            },
+        },
+        "required": ["primary_status", "conclusion"],
+    },
+}
+
+REPORT_INCIDENTAL_VERIFICATIONS_TOOL = {
+    "name": "report_incidental_verifications",
+    "description": (
+        "After the primary test has ended, report pending tests already proven by the "
+        "existing execution history. This tool cannot perform more computer actions."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "also_verified": {
+                "type": "array",
+                "description": (
+                    "Pending tests completely and directly proven by the existing history."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": {"type": "string"},
+                        "evidence": {"type": "string"},
+                    },
+                    "required": ["test_id", "evidence"],
+                },
+            }
+        },
+        "required": ["also_verified"],
+    },
+}
+
 
 @dataclass
 class ClaudeCUAction:
@@ -165,6 +273,7 @@ class ClaudeCUAction:
     model_end_coordinate: Optional[list[int]] = None
     end_coordinate: Optional[list[int]] = None
     duration: Optional[float] = None
+    field_label: Optional[str] = None
 
 
 @dataclass
@@ -175,10 +284,33 @@ class ClaudeUserInputRequest:
 
 
 @dataclass
+class ClaudeVerifiedTest:
+    """A secondary pending test directly verified during the primary flow."""
+    test_id: str
+    evidence: str
+
+
+@dataclass
+class ClaudeTestCompletion:
+    """Structured terminal report for the primary test."""
+    tool_use_id: str
+    primary_status: str
+    conclusion: str
+
+
+@dataclass
+class ClaudeIncidentalVerificationReport:
+    """Post-completion assessment of coverage already present in the history."""
+    also_verified: list[ClaudeVerifiedTest] = field(default_factory=list)
+
+
+@dataclass
 class ClaudeCUResponse:
     """Parsed response from Claude Computer Use."""
     actions: list[ClaudeCUAction] = field(default_factory=list)
     input_request: Optional[ClaudeUserInputRequest] = None
+    completion_report: Optional[ClaudeTestCompletion] = None
+    incidental_verification_report: Optional[ClaudeIncidentalVerificationReport] = None
     text: Optional[str] = None
     thinking: Optional[str] = None
     is_done: bool = False
@@ -241,6 +373,8 @@ class ClaudeComputerUseAgent:
         "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
         "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
         + USER_INPUT_INSTRUCTIONS
+        + FORM_EDITING_INSTRUCTIONS
+        + SUITE_VERIFICATION_INSTRUCTIONS
         + BATCHING_INSTRUCTIONS
     )
 
@@ -286,6 +420,8 @@ class ClaudeComputerUseAgent:
                 "display_height_px": self.screenshot_height,
             },
             REQUEST_USER_INPUT_TOOL,
+            SET_TEXT_FIELD_TOOL,
+            COMPLETE_TEST_EXECUTION_TOOL,
         ]
         print(
             "[CLAUDE-CU] Screenshot spaces: "
@@ -341,7 +477,12 @@ class ClaudeComputerUseAgent:
         """
         self._pending_guidance = text
 
-    def step(self, tool_use_ids: list[str], screenshot_bytes: bytes) -> ClaudeCUResponse:
+    def step(
+        self,
+        tool_use_ids: list[str],
+        screenshot_bytes: bytes,
+        tool_errors: Optional[dict[str, str]] = None,
+    ) -> ClaudeCUResponse:
         """
         Continue after executing actions.
         Sends tool_result for each tool_use_id with the new screenshot.
@@ -357,24 +498,34 @@ class ClaudeComputerUseAgent:
         pending_guidance = self._pending_guidance
         self._pending_guidance = None
 
-        # Build one tool_result per action — screenshot only, no guidance mixed in.
-        tool_results: list[dict] = [
-            {
-                "type": "tool_result",
-                "tool_use_id": tid,
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_b64,
-                        },
-                    }
-                ],
-            }
-            for tid in tool_use_ids
-        ]
+        # Build one tool_result per action. Anthropic requires error results to
+        # contain text only; successful results carry the updated screenshot.
+        tool_errors = tool_errors or {}
+        tool_results: list[dict] = []
+        for tid in tool_use_ids:
+            if tid in tool_errors:
+                result = {
+                    "type": "tool_result",
+                    "tool_use_id": tid,
+                    "content": [{"type": "text", "text": tool_errors[tid]}],
+                    "is_error": True,
+                }
+            else:
+                result = {
+                    "type": "tool_result",
+                    "tool_use_id": tid,
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": screenshot_b64,
+                            },
+                        }
+                    ],
+                }
+            tool_results.append(result)
 
         # Guidance lives at the top level of the user message — NOT inside
         # tool_result — so Claude's parser attributes it to the operator/user,
@@ -387,6 +538,38 @@ class ClaudeComputerUseAgent:
 
         self.messages.append({"role": "user", "content": user_content})
         return self._call()
+
+    def assess_incidental_verifications(
+        self,
+        completion_tool_use_id: str,
+        pending_tests: list[dict],
+    ) -> ClaudeCUResponse:
+        """Assess prior evidence after primary completion, with no computer tool available."""
+        assessment_prompt = (
+            "The primary test is now recorded and computer interaction is over. Review "
+            "only the actions and screenshots already present in this conversation. "
+            "Compare that existing evidence with the pending tests below. Report a test "
+            "only if its full preconditions, behavior, and expected result were directly "
+            "observed. Do not infer functionality from visibility alone. It is correct to "
+            "report none. Call report_incidental_verifications now.\n\n"
+            "PENDING TESTS:\n"
+            + json.dumps(pending_tests, ensure_ascii=False)
+        )
+        self.messages.append({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": completion_tool_use_id,
+                "content": assessment_prompt,
+            }],
+        })
+
+        interactive_tools = self.tools
+        self.tools = [REPORT_INCIDENTAL_VERIFICATIONS_TOOL]
+        try:
+            return self._call()
+        finally:
+            self.tools = interactive_tools
 
     def answer_user_input(self, tool_use_id: str, value: str) -> ClaudeCUResponse:
         """Return the operator's answer to Claude's request_user_input tool call."""
@@ -460,6 +643,8 @@ class ClaudeComputerUseAgent:
 
         actions: list[ClaudeCUAction] = []
         input_request: Optional[ClaudeUserInputRequest] = None
+        completion_report: Optional[ClaudeTestCompletion] = None
+        incidental_verification_report: Optional[ClaudeIncidentalVerificationReport] = None
         text_parts: list[str] = []
         thinking_parts: list[str] = []
 
@@ -493,11 +678,51 @@ class ClaudeComputerUseAgent:
                     ),
                     duration=inp.get("duration"),
                 ))
+            elif block.type == "tool_use" and block.name == "set_text_field":
+                inp = block.input if isinstance(block.input, dict) else {}
+                model_coordinate = inp.get("coordinate")
+                raw_value = inp.get("value")
+                actions.append(ClaudeCUAction(
+                    tool_use_id=block.id,
+                    action="set_text_field",
+                    model_coordinate=model_coordinate,
+                    coordinate=self._to_logical_coordinate(model_coordinate),
+                    text=raw_value if isinstance(raw_value, str) else None,
+                    field_label=str(inp.get("field_label", "")).strip() or None,
+                ))
             elif block.type == "tool_use" and block.name == "request_user_input":
                 message = str(block.input.get("message", "")).strip()
                 input_request = ClaudeUserInputRequest(
                     tool_use_id=block.id,
                     message=message or "Please provide the information needed to continue.",
+                )
+            elif block.type == "tool_use" and block.name == "complete_test_execution":
+                inp = block.input if isinstance(block.input, dict) else {}
+                primary_status = str(inp.get("primary_status", "failed")).lower()
+                if primary_status not in {"passed", "failed"}:
+                    primary_status = "failed"
+                completion_report = ClaudeTestCompletion(
+                    tool_use_id=block.id,
+                    primary_status=primary_status,
+                    conclusion=str(inp.get("conclusion", "")).strip(),
+                )
+            elif block.type == "tool_use" and block.name == "report_incidental_verifications":
+                inp = block.input if isinstance(block.input, dict) else {}
+                also_verified: list[ClaudeVerifiedTest] = []
+                raw_verified = inp.get("also_verified", [])
+                if isinstance(raw_verified, list):
+                    for item in raw_verified:
+                        if not isinstance(item, dict):
+                            continue
+                        verified_test_id = str(item.get("test_id", "")).strip()
+                        evidence = str(item.get("evidence", "")).strip()
+                        if verified_test_id and evidence:
+                            also_verified.append(ClaudeVerifiedTest(
+                                test_id=verified_test_id,
+                                evidence=evidence,
+                            ))
+                incidental_verification_report = ClaudeIncidentalVerificationReport(
+                    also_verified=also_verified,
                 )
             elif block.type == "thinking":
                 thinking_parts.append(getattr(block, "thinking", "") or "")
@@ -509,6 +734,8 @@ class ClaudeComputerUseAgent:
         return ClaudeCUResponse(
             actions=actions,
             input_request=input_request,
+            completion_report=completion_report,
+            incidental_verification_report=incidental_verification_report,
             text=" ".join(text_parts) if text_parts else None,
             thinking=" ".join(thinking_parts) if thinking_parts else None,
             is_done=is_done,

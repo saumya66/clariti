@@ -165,7 +165,15 @@ function PastRunsPage() {
   const { projectId, featureId } = Route.useParams();
   const { project } = useProject(projectId);
   const { features } = useProjectFeatures(projectId);
-  const { runs, loading, error } = useFeatureTestRuns(featureId);
+  const {
+    runs,
+    totalRuns,
+    loading,
+    loadingMore,
+    hasMore,
+    loadMore,
+    error,
+  } = useFeatureTestRuns(featureId);
 
   const feature = features.find((f) => f.id === featureId);
 
@@ -234,7 +242,7 @@ function PastRunsPage() {
               <span className="animate-pulse">Loading…</span>
             ) : (
               <>
-                Execution history for{' '}
+                {totalRuns} saved {totalRuns === 1 ? 'run' : 'runs'} for{' '}
                 <span className="font-medium text-foreground">{feature?.name ?? '…'}</span>
               </>
             )}
@@ -292,30 +300,49 @@ function PastRunsPage() {
           </Link>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-[#ececf1] bg-white shadow-[0_2px_8px_rgba(15,15,25,0.05)]">
-          {/* Column headers */}
-          <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-5 border-b border-[#ececf1] bg-[#fafafd] px-6 py-3">
-            <div className="size-9" />
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Run
-            </span>
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground min-w-32 text-right">
-              Result · Date
-            </span>
-            <span className="w-4" />
+        <div>
+          <div className="overflow-hidden rounded-2xl border border-[#ececf1] bg-white shadow-[0_2px_8px_rgba(15,15,25,0.05)]">
+            {/* Column headers */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-5 border-b border-[#ececf1] bg-[#fafafd] px-6 py-3">
+              <div className="size-9" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Run
+              </span>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground min-w-32 text-right">
+                Result · Date
+              </span>
+              <span className="w-4" />
+            </div>
+
+            {/* Rows — most recent first (API returns sorted by created_at desc) */}
+            {runs.map((run, i) => (
+              <RunRow
+                key={run.id}
+                run={run}
+                projectId={projectId}
+                featureId={featureId}
+                featureName={feature?.name ?? ''}
+                index={i}
+              />
+            ))}
           </div>
 
-          {/* Rows — most recent first (API returns sorted by created_at desc) */}
-          {runs.map((run, i) => (
-            <RunRow
-              key={run.id}
-              run={run}
-              projectId={projectId}
-              featureId={featureId}
-              featureName={feature?.name ?? ''}
-              index={i}
-            />
-          ))}
+          <div className="mt-4 flex items-center justify-between gap-4">
+            <p className="text-xs text-muted-foreground">
+              Showing {runs.length} of {totalRuns} {totalRuns === 1 ? 'run' : 'runs'}
+            </p>
+            {hasMore && (
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="inline-flex items-center gap-2 rounded-lg border border-[#ececf1] bg-white px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-[#f5f5f8] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loadingMore && <Loader2 className="size-3.5 animate-spin" />}
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

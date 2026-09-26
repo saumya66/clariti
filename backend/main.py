@@ -22,6 +22,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 import asyncio
 import json
+import re
 from datetime import datetime as _dt, timezone as _tz
 from pathlib import Path
 from dotenv import load_dotenv
@@ -43,6 +44,8 @@ from agents import VisionAgent, PlannerAgent, WindowResolverAgent, OrchestratorA
 from agents.computer_use_agent import ComputerUseAgent
 from agents.claude_computer_use_agent import (
     BATCHING_INSTRUCTIONS,
+    FORM_EDITING_INSTRUCTIONS,
+    SUITE_VERIFICATION_INSTRUCTIONS,
     USER_INPUT_INSTRUCTIONS,
     ClaudeComputerUseAgent,
 )
@@ -51,7 +54,7 @@ from agents.vision_agent import calculate_screen_coordinates
 from agents.planner_agent import ActionType as PlanActionType
 from execution_learning import (
     build_suite_learning_log,
-    learn_and_update_project,
+    learn_and_update_contexts,
     should_run_context_learning,
 )
 from vision import (
@@ -79,6 +82,7 @@ from cloud_client import (
     create_project as cloud_create_project,
     get_project as cloud_get_project,
     update_project as cloud_update_project,
+    update_feature as cloud_update_feature,
     delete_project as cloud_delete_project,
     list_context_items as cloud_list_context_items,
     save_context_items_batch as cloud_save_context_items_batch,
@@ -112,6 +116,115 @@ def _redact_operator_values(text: str, values: list[str]) -> str:
         if value:
             redacted = redacted.replace(value, "[operator-provided value]")
     return redacted
+
+
+def _test_case_id(test_case: dict, index: int) -> str:
+    """Return the stable ID used by execution events and the suite ledger."""
+    return str(test_case.get("id") or f"TC-{index + 1}")
+
+
+def _pending_test_catalog(
+    test_cases: list[dict],
+    current_test_id: str,
+    resolved_test_ids: set[str],
+) -> list[dict]:
+    """Build the exact-ID catalog used only after primary computer control ends."""
+    pending: list[dict] = []
+    for index, candidate in enumerate(test_cases):
+        candidate_id = _test_case_id(candidate, index)
+        if candidate_id == current_test_id or candidate_id in resolved_test_ids:
+            continue
+        pending.append({
+            "test_id": candidate_id,
+            "title": candidate.get("title", "Unknown Test"),
+            "goal": candidate.get("goal", "N/A"),
+            "expected_result": candidate.get("expected_result", "N/A"),
+        })
+    return pending
+
+
+_SENSITIVE_INPUT_CONTEXTS = (
+    "otp",
+    "one-time password",
+    "verification code",
+    "passcode",
+    "password",
+    "email field",
+    "email address",
+    "phone field",
+    "phone number",
+    "mobile number",
+    "address line",
+    "address field",
+    "street address",
+    "postal address",
+    "pin code",
+    "postal code",
+    "full name",
+    "name field",
+    "customer name",
+    "enter a name",
+    "type a name",
+    "serial number",
+    "invite code",
+    "api key",
+)
+_ARBITRARY_INPUT_MARKERS = ("random", "fake", "invalid", "malformed", "dummy")
+
+
+def _unsourced_sensitive_input_reason(
+    *,
+    action_text: str,
+    reasoning: str,
+    allowed_source_text: str,
+    test_goal: str,
+) -> str | None:
+    """Reject obvious invented identity/secret values before they reach the app."""
+    value = action_text.strip()
+    if not value:
+        return None
+    if any(marker in test_goal.lower() for marker in _ARBITRARY_INPUT_MARKERS):
+        return None
+
+    # Exact values already supplied in the goal, owner memory, project context, or
+    # operator answers are allowed. Also tolerate punctuation differences in numbers.
+    if value.lower() in allowed_source_text.lower():
+        return None
+    value_digits = re.sub(r"\D", "", value)
+    if len(value_digits) >= 4:
+        for source_number in re.findall(
+            r"\+?\d(?:[\d\s().-]{2,}\d)?",
+            allowed_source_text,
+        ):
+            source_digits = re.sub(r"\D", "", source_number)
+            numbers_match = value_digits == source_digits
+            phone_suffix_matches = (
+                min(len(value_digits), len(source_digits)) >= 8
+                and max(len(value_digits), len(source_digits)) >= 10
+                and (
+                    value_digits.endswith(source_digits)
+                    or source_digits.endswith(value_digits)
+                )
+            )
+            if len(source_digits) >= 4 and (numbers_match or phone_suffix_matches):
+                return None
+
+    context = reasoning.lower()
+    sensitive_context = next(
+        (label for label in _SENSITIVE_INPUT_CONTEXTS if label in context),
+        None,
+    )
+    looks_like_email = bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value))
+    looks_like_phone = len(value_digits) >= 10 and len(value_digits) >= len(value) - 4
+    if not (sensitive_context or looks_like_email or looks_like_phone):
+        return None
+
+    return (
+        "This action was blocked because it attempted to enter a user-specific, "
+        "company-specific, or secret value that was not supplied by the operator or "
+        "available context. Do not invent or retrieve the value yourself. Call "
+        "request_user_input now and ask the operator for the exact value needed."
+    )
 
 
 @asynccontextmanager
@@ -1953,6 +2066,78 @@ async def computer_use_stream(request: CURequest):
 # Claude Computer Use Endpoint
 # =============================================================================
 
+_KEY_ALIASES = {
+    "cmd": "command",
+    "super": "command",
+    "control": "ctrl",
+    "ctl": "ctrl",
+    "option": "alt",
+    "return": "enter",
+    "escape": "esc",
+    "del": "delete",
+    "spacebar": "space",
+    "page up": "pageup",
+    "page down": "pagedown",
+    "caps lock": "capslock",
+    "print screen": "printscreen",
+}
+_KEY_MODIFIERS = {"command", "ctrl", "alt", "shift"}
+_MACOS_COMMAND_SHORTCUT_KEYS = {"a", "c", "f", "l", "n", "p", "r", "s", "t", "v", "w", "x", "z"}
+
+
+def _normalise_key_chord(action) -> list[str]:
+    """Validate one generic Computer Use key chord for pyautogui."""
+    raw_keys = action.keys or []
+    if raw_keys:
+        if len(raw_keys) == 1 and "+" in raw_keys[0]:
+            parts = raw_keys[0].split("+")
+        else:
+            parts = raw_keys
+    else:
+        raw_text = (action.text or "").strip()
+        if not raw_text:
+            raise ValueError("Keyboard action did not include a key or chord.")
+        phrase = _KEY_ALIASES.get(raw_text.lower())
+        if phrase:
+            parts = [phrase]
+        else:
+            parts = raw_text.split("+")
+
+    mapped: list[str] = []
+    supported_keys = {str(key).lower() for key in pyautogui.KEYBOARD_KEYS}
+    for part in parts:
+        key = str(part).strip().lower()
+        key = _KEY_ALIASES.get(key, key)
+        if not key or any(character.isspace() for character in key):
+            raise ValueError(
+                "Keyboard actions may contain only one key or one chord. "
+                "Send sequential operations as separate actions."
+            )
+        if key not in supported_keys:
+            raise ValueError(f"Unsupported keyboard key: {part!r}.")
+        mapped.append(key)
+
+    non_modifiers = [key for key in mapped if key not in _KEY_MODIFIERS]
+    if len(non_modifiers) > 1:
+        raise ValueError(
+            "Keyboard actions may contain only one non-modifier key per chord. "
+            "Send sequential operations as separate actions."
+        )
+
+    if (
+        sys.platform == "darwin"
+        and "ctrl" in mapped
+        and non_modifiers
+        and non_modifiers[0] in _MACOS_COMMAND_SHORTCUT_KEYS
+    ):
+        raise ValueError(
+            f"Use Command+{non_modifiers[0].upper()} instead of "
+            f"Control+{non_modifiers[0].upper()} for this standard macOS shortcut."
+        )
+
+    return mapped
+
+
 def execute_claude_action(action, window) -> dict:
     """Execute a single Claude Computer Use action. Coords are in window-local pixels."""
     result = {}
@@ -1983,18 +2168,37 @@ def execute_claude_action(action, window) -> dict:
             pyautogui.write(action.text, interval=0.03)
         result["text"] = action.text
 
-    elif atype == "key":
+    elif atype == "set_text_field":
+        if not action.coordinate or len(action.coordinate) != 2:
+            raise ValueError("set_text_field requires a valid [x, y] coordinate.")
+        if action.text is None:
+            raise ValueError("set_text_field requires a string value.")
+        local_x, local_y = action.coordinate
+        if not (0 <= local_x < window.bounds.width and 0 <= local_y < window.bounds.height):
+            raise ValueError("set_text_field coordinate is outside the target window.")
+
+        gx = window.bounds.left + local_x
+        gy = window.bounds.top + local_y
+        human_click(gx, gy)
+        time.sleep(0.2)
+        select_all_modifier = "command" if sys.platform == "darwin" else "ctrl"
+        pyautogui.hotkey(select_all_modifier, "a")
+        time.sleep(0.1)
+        pyautogui.press("backspace")
         if action.text:
-            keys = action.text.split("+")
-            key_map = {"ctrl": "ctrl", "cmd": "command", "super": "command",
-                       "alt": "alt", "option": "alt", "shift": "shift",
-                       "return": "enter", "space": "space"}
-            mapped = [key_map.get(k.strip().lower(), k.strip().lower()) for k in keys]
-            if len(mapped) == 1:
-                pyautogui.press(mapped[0])
-            else:
-                pyautogui.hotkey(*mapped)
-        result["keys"] = action.text
+            time.sleep(0.1)
+            pyautogui.write(action.text, interval=0.03)
+        result["coordinates"] = [gx, gy]
+        result["field_label"] = action.field_label
+        result["text"] = action.text
+
+    elif atype == "key":
+        mapped = _normalise_key_chord(action)
+        if len(mapped) == 1:
+            pyautogui.press(mapped[0])
+        else:
+            pyautogui.hotkey(*mapped)
+        result["keys"] = mapped
 
     elif atype == "mouse_move":
         if action.coordinate:
@@ -2041,7 +2245,7 @@ def execute_claude_action(action, window) -> dict:
         time.sleep(2)
 
     else:
-        result["warning"] = f"Unrecognised action: {atype}"
+        raise ValueError(f"Unrecognised Claude Computer Use action: {atype}")
 
     return result
 
@@ -2732,22 +2936,36 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
         
         suite_results = {"passed": 0, "failed": 0, "skipped": 0, "test_results": []}
         suite_learning_logs: list[dict] = []
+        resolved_test_ids: set[str] = set()
+        test_cases_by_id = {
+            _test_case_id(test_case, index): test_case
+            for index, test_case in enumerate(test_cases)
+        }
+        test_numbers_by_id = {
+            _test_case_id(test_case, index): index + 1
+            for index, test_case in enumerate(test_cases)
+        }
         learning_project_id: str | None = None
+        learning_feature_id: str | None = None
         learning_project_context = ""
         learning_feature_context = ""
 
-        # ── Build Claude system prompt once (fetches project + feature context) ──
+        # Fetch project + feature context once for every cloud-backed suite. Claude
+        # receives it in the system prompt; the legacy Gemini path receives the same
+        # block in each test goal.
         cu_system_prompt: str | None = None
-        if provider == "claude" and request.cloud_feature_id and request.cloud_token:
-            print(f"[DEBUG] Building Claude system prompt for feature {request.cloud_feature_id}...")
+        execution_context_block = ""
+        project_context_str = ""
+        project_owner_memory_str = ""
+        feature_context_str = ""
+        if request.cloud_feature_id and request.cloud_token:
+            print(f"[DEBUG] Loading execution context for feature {request.cloud_feature_id}...")
             try:
                 from cloud_client import get_feature as cloud_get_feature
                 feat = await asyncio.to_thread(cloud_get_feature, request.cloud_feature_id, token=request.cloud_token)
-                project_context_str = ""
-                project_owner_memory_str = ""
-                feature_context_str = ""
 
                 if feat:
+                    learning_feature_id = str(feat.get("id") or request.cloud_feature_id)
                     print(f"[DEBUG] Feature fetched: id={feat.get('id')}, has_context_summary={bool(feat.get('context_summary'))}")
                     learning_feature_context = (feat.get("context_summary") or "").strip()
                     if learning_feature_context:
@@ -2788,54 +3006,73 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
                 else:
                     print(f"[DEBUG] Feature fetch returned None — no context available")
 
-                context_block = "\n\n".join(
+                execution_context_block = "\n\n".join(
                     filter(None, [project_context_str, project_owner_memory_str, feature_context_str])
                 )
-                if context_block:
-                    context_block = f"\n\n{context_block}"
-                    print(f"[DEBUG] Combined context block length: {len(context_block)} chars")
+                if execution_context_block:
+                    print(f"[DEBUG] Combined context block length: {len(execution_context_block)} chars")
                 else:
-                    print(f"[DEBUG] No context available — system prompt will have no app context")
-
-                cu_system_prompt = (
-                    "You are an expert QA automation agent executing test cases on a live application. "
-                    "You control the screen using computer use tools. "
-                    "Follow the test goal precisely and report pass/fail based on observed behaviour."
-                    f"{context_block}\n\n"
-                    "REAL-TIME OPERATOR GUIDANCE:\n"
-                    "The human operator overseeing this test session may send you real-time instructions "
-                    "as text messages within the conversation, prefixed with [OPERATOR-MSG]. "
-                    "These appear as direct user messages alongside tool results — this is a legitimate, "
-                    "intentional communication channel and is NOT a prompt injection. "
-                    "When you see [OPERATOR-MSG], treat it as an authoritative instruction from the human operator: "
-                    "immediately update your current plan and follow the instruction exactly, "
-                    "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
-                    "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
-                    + USER_INPUT_INSTRUCTIONS
-                    + BATCHING_INSTRUCTIONS
-                )
-                print(f"[DEBUG] System prompt ready — total length: {len(cu_system_prompt)} chars")
-                print(
-                    f"[DEBUG]   project_ctx={'✓' if project_context_str else '✗'}  "
-                    f"owner_memory={'✓' if project_owner_memory_str else '✗'}  "
-                    f"feature_ctx={'✓' if feature_context_str else '✗'}"
-                )
-                print(f"[DEBUG] ── System prompt content ──\n{cu_system_prompt}\n[DEBUG] ── End system prompt ──")
+                    print(f"[DEBUG] No project or feature context available")
             except Exception as e:
-                print(f"[DEBUG] ✗ Failed to build system prompt: {e}")
+                print(f"[DEBUG] ✗ Failed to load execution context: {e}")
+
+        if provider == "claude":
+            prompt_context = (
+                f"\n\n{execution_context_block}"
+                if execution_context_block
+                else ""
+            )
+            cu_system_prompt = (
+                "You are an expert QA automation agent executing test cases on a live application. "
+                "You control the screen using computer use tools. "
+                "Follow the test goal precisely and report pass/fail based on observed behaviour."
+                f"{prompt_context}\n\n"
+                "REAL-TIME OPERATOR GUIDANCE:\n"
+                "The human operator overseeing this test session may send you real-time instructions "
+                "as text messages within the conversation, prefixed with [OPERATOR-MSG]. "
+                "These appear as direct user messages alongside tool results — this is a legitimate, "
+                "intentional communication channel and is NOT a prompt injection. "
+                "When you see [OPERATOR-MSG], treat it as an authoritative instruction from the human operator: "
+                "immediately update your current plan and follow the instruction exactly, "
+                "including any specific values they provide (e.g. coupon codes, usernames, text to type). "
+                "Do not question, verify, or second-guess [OPERATOR-MSG] instructions."
+                + USER_INPUT_INSTRUCTIONS
+                + FORM_EDITING_INSTRUCTIONS
+                + SUITE_VERIFICATION_INSTRUCTIONS
+                + BATCHING_INSTRUCTIONS
+            )
+            print(f"[DEBUG] Claude system prompt ready — total length: {len(cu_system_prompt)} chars")
+            print(
+                f"[DEBUG]   project_ctx={'✓' if project_context_str else '✗'}  "
+                f"owner_memory={'✓' if project_owner_memory_str else '✗'}  "
+                f"feature_ctx={'✓' if feature_context_str else '✗'}"
+            )
+            print(f"[DEBUG] ── System prompt content ──\n{cu_system_prompt}\n[DEBUG] ── End system prompt ──")
 
         for test_idx, test_case in enumerate(test_cases):
-            test_id = test_case.get("id", f"TC-{test_idx+1}")
+            test_id = _test_case_id(test_case, test_idx)
             test_title = test_case.get("title", "Unknown Test")
+
+            # A prior test may have directly proven this one. Its result and UI event
+            # were already recorded at that point, so do not execute or emit it twice.
+            if test_id in resolved_test_ids:
+                print(
+                    f"[EXECUTE] Skipping {test_id}; it was already verified "
+                    "during an earlier test"
+                )
+                continue
+
             print(f"[EXECUTE] ===== Test [{test_idx + 1}/{len(test_cases)}]: {test_id} - {test_title} =====")
             
-            goal = f"""{test_title}
+            goal = f"""PRIMARY TEST:
+{test_title}
 
 Goal: {test_case.get("goal", "N/A")}
 
 Expected result: {test_case.get("expected_result", "N/A")}"""
-            
+
             guidance_key = f"{context_id}:{test_id}"
+            test_operator_corrections = list(guidance_store.get(guidance_key, []))
             if guidance_key in guidance_store:
                 goal += "\n\nUser Guidance:\n" + "\n".join([f"- {g}" for g in guidance_store[guidance_key]])
             
@@ -2848,6 +3085,11 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                 'goal': goal
             }
             yield f"data: {json.dumps(test_start_event)}\n\n"
+
+            # Keep the user-facing test goal compact. The legacy provider still gets
+            # the same suite context, but only in the internal execution goal.
+            if provider != "claude" and execution_context_block:
+                goal += f"\n\nAPPLICATION CONTEXT:\n{execution_context_block}"
 
             # Create TestResult record immediately so we have a result_id for step appends
             cloud_result_id = None
@@ -2870,6 +3112,9 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
             test_passed = False
             test_steps = []
             operator_input_values: list[str] = []
+            reported_conclusion = ""
+            completion_tool_use_id: str | None = None
+            cu_response = None
             
             if provider == "claude":
                 # ── Claude Computer Use path ──
@@ -2882,10 +3127,12 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         system_prompt=cu_system_prompt,
                         api_key=request.anthropic_api_key or None,
                     )
+                    allowed_input_source_text = f"{agent.system_prompt}\n{goal}"
                 except ValueError as e:
                     yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': str(e)})}\n\n"
                     suite_results["failed"] += 1
                     suite_results["test_results"].append({"test_id": test_id, "title": test_title, "status": "failed", "steps": []})
+                    resolved_test_ids.add(test_id)
                     yield f"data: {json.dumps({'event': 'test_complete', 'test_id': test_id, 'status': 'failed', 'steps_executed': 0})}\n\n"
                     continue
 
@@ -2898,13 +3145,26 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': f'Screenshot failed: {str(e)}'})}\n\n"
                     suite_results["failed"] += 1
                     suite_results["test_results"].append({"test_id": test_id, "title": test_title, "status": "failed", "steps": []})
+                    resolved_test_ids.add(test_id)
                     yield f"data: {json.dumps({'event': 'test_complete', 'test_id': test_id, 'status': 'failed', 'steps_executed': 0})}\n\n"
                     continue
 
-                # Run blocking Anthropic API call in a thread so the event loop stays free
-                cu_response = await asyncio.to_thread(agent.start, goal, screenshot_bytes)
                 step_num = 0
-                max_steps = 30
+                # Run blocking Anthropic API calls in a thread so the event loop stays
+                # free. Provider failures must become SSE errors rather than abruptly
+                # closing the stream (which the frontend can only label "Network Error").
+                try:
+                    cu_response = await asyncio.to_thread(
+                        agent.start,
+                        goal,
+                        screenshot_bytes,
+                    )
+                    max_steps = 30
+                except Exception as e:
+                    reported_conclusion = f"Claude request failed: {e}"
+                    print(f"[EXECUTE-CU] Initial Claude request failed: {e}")
+                    yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': 0, 'error': reported_conclusion})}\n\n"
+                    max_steps = 0
 
                 for turn in range(max_steps):
                     # Abort check — fires at the top of every turn
@@ -2916,6 +3176,30 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
                     if cu_response.thinking:
                         latest_thinking = cu_response.thinking
+
+                    if cu_response.completion_report:
+                        if cu_response.actions or cu_response.input_request:
+                            print(
+                                "[SUITE-VERIFY] Claude returned completion alongside "
+                                "another tool; refusing mixed tool calls"
+                            )
+                            reported_conclusion = (
+                                "Claude returned an invalid mixed completion response."
+                            )
+                            break
+
+                        completion = cu_response.completion_report
+                        test_passed = completion.primary_status == "passed"
+                        completion_tool_use_id = completion.tool_use_id
+                        reported_conclusion = _redact_operator_values(
+                            completion.conclusion,
+                            operator_input_values,
+                        )
+                        print(
+                            f"[SUITE-VERIFY] Primary {test_id}={completion.primary_status}; "
+                            "computer interaction stopped"
+                        )
+                        break
 
                     if cu_response.is_done:
                         print(f"[EXECUTE-CU] ✓ Claude says done: {cu_response.text}")
@@ -2965,16 +3249,24 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
                             operator_input_values.append(answer)
                             print(f"[USER-INPUT] Operator answered request {input_request.tool_use_id}; resuming Claude")
-                            cu_response = await asyncio.to_thread(
-                                agent.answer_user_input,
-                                input_request.tool_use_id,
-                                answer,
-                            )
+                            try:
+                                cu_response = await asyncio.to_thread(
+                                    agent.answer_user_input,
+                                    input_request.tool_use_id,
+                                    answer,
+                                )
+                            except Exception as e:
+                                reported_conclusion = f"Claude request failed after operator input: {e}"
+                                print(f"[EXECUTE-CU] Claude input response failed: {e}")
+                                yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': step_num, 'error': reported_conclusion})}\n\n"
+                                break
                         finally:
                             pending_user_inputs.pop(input_request.tool_use_id, None)
                         continue
 
                     tool_use_ids: list[str] = []
+                    tool_errors: dict[str, str] = {}
+                    batch_failure_reason: str | None = None
 
                     action_count = len(cu_response.actions)
                     action_names = [a.action for a in cu_response.actions]
@@ -2991,37 +3283,82 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             cu_response.thinking or cu_response.text or '',
                             operator_input_values,
                         )
-                        recorded_action_text = _redact_operator_values(
-                            action.text or '',
-                            operator_input_values,
-                        ) or None
-                        step_desc = step_reasoning.strip() if step_reasoning.strip() else (
-                            f"{action.action}{' → ' + recorded_action_text if recorded_action_text else ''}"
-                            f"{' at ' + str(action.coordinate) if action.coordinate else ''}"
+                        blocked_reason = None
+                        sensitive_input_blocked = False
+                        if batch_failure_reason:
+                            blocked_reason = (
+                                "This action was not executed because an earlier action in "
+                                f"the same batch failed: {batch_failure_reason}"
+                            )
+                        elif action.action in {"type", "set_text_field"}:
+                            input_context = cu_response.thinking or cu_response.text or ""
+                            if action.field_label:
+                                input_context += f"\nTarget field: {action.field_label}"
+                            blocked_reason = _unsourced_sensitive_input_reason(
+                                action_text=action.text or "",
+                                reasoning=input_context,
+                                allowed_source_text=(
+                                    allowed_input_source_text
+                                    + "\n"
+                                    + "\n".join(operator_input_values)
+                                ),
+                                test_goal=goal,
+                            )
+                            if blocked_reason:
+                                sensitive_input_blocked = True
+                                batch_failure_reason = blocked_reason
+
+                        recorded_action_text = None if blocked_reason else (
+                            _redact_operator_values(
+                                action.text or '',
+                                operator_input_values,
+                            ) or None
+                        )
+                        step_desc = (
+                            "Blocked unsourced sensitive input; waiting for operator input."
+                            if sensitive_input_blocked
+                            else "Not executed because an earlier action in this batch failed."
+                            if blocked_reason
+                            else step_reasoning.strip() if step_reasoning.strip() else (
+                                f"{action.action}{' → ' + recorded_action_text if recorded_action_text else ''}"
+                                f"{' at ' + str(action.coordinate) if action.coordinate else ''}"
+                            )
                         )
                         step_data = {
                             'step_number': step_num,
                             'action': action.action,
                             'type': _get_step_type(action.action),
                             'description': step_desc,
-                            'target': recorded_action_text,
+                            'target': action.field_label or recorded_action_text,
                             'value': f"({action.coordinate[0]}, {action.coordinate[1]})" if action.coordinate else None,
-                            'reasoning': step_reasoning,
+                            'reasoning': "" if blocked_reason else step_reasoning,
                             'success': False,
                             'coordinates': None,
                             'confidence': None,
-                            'error': None,
+                            'error': blocked_reason,
                             'timestamp': _dt.now(_tz.utc).isoformat(),
                         }
 
-                        try:
-                            print(f"[EXECUTE-CU] Step {step_num}: {action.action}")
-                            result = await asyncio.to_thread(execute_claude_action, action, window)
-                            step_data['success'] = True
-                            step_data['coordinates'] = result.get("coordinates")
-                        except Exception as e:
-                            print(f"[EXECUTE-CU] Error: {e}")
-                            step_data['error'] = str(e)
+                        if blocked_reason:
+                            print(
+                                f"[EXECUTE-CU] Blocked {action.action} action "
+                                f"for test {test_id}: {blocked_reason}"
+                            )
+                            tool_errors[action.tool_use_id] = blocked_reason
+                        else:
+                            try:
+                                print(f"[EXECUTE-CU] Step {step_num}: {action.action}")
+                                result = await asyncio.to_thread(execute_claude_action, action, window)
+                                step_data['success'] = True
+                                step_data['coordinates'] = result.get("coordinates")
+                            except Exception as e:
+                                execution_error = (
+                                    f"{action.action} was not executed: {e}"
+                                )
+                                print(f"[EXECUTE-CU] Error: {execution_error}")
+                                step_data['error'] = execution_error
+                                tool_errors[action.tool_use_id] = execution_error
+                                batch_failure_reason = execution_error
 
                         tool_use_ids.append(action.tool_use_id)
                         test_steps.append(step_data)
@@ -3053,6 +3390,8 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                             print(f"[PAUSE] ⏱  Pause timed out for context {context_id} — resuming without guidance")
                         if g := pause_guidance.pop(context_id, None):
                             print(f"[PAUSE] ▶  Resuming (Claude CU) with guidance: {g!r}")
+                            test_operator_corrections.append(g)
+                            allowed_input_source_text += f"\n{g}"
                             agent.inject_guidance(g)
                         else:
                             print(f"[PAUSE] ▶  Resuming (Claude CU) without guidance")
@@ -3067,14 +3406,26 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         print(f"[EXECUTE-CU] Screenshot failed: {e}")
                         break
 
-                    if tool_use_ids:
-                        cu_response = await asyncio.to_thread(agent.step, tool_use_ids, screenshot_bytes)
-                    else:
-                        cu_response = await asyncio.to_thread(
-                            agent.step,
-                            [action.tool_use_id for action in cu_response.actions] if cu_response.actions else [],
-                            screenshot_bytes,
-                        )
+                    try:
+                        if tool_use_ids:
+                            cu_response = await asyncio.to_thread(
+                                agent.step,
+                                tool_use_ids,
+                                screenshot_bytes,
+                                tool_errors,
+                            )
+                        else:
+                            cu_response = await asyncio.to_thread(
+                                agent.step,
+                                [action.tool_use_id for action in cu_response.actions] if cu_response.actions else [],
+                                screenshot_bytes,
+                                tool_errors,
+                            )
+                    except Exception as e:
+                        reported_conclusion = f"Claude request failed during execution: {e}"
+                        print(f"[EXECUTE-CU] Claude step failed: {e}")
+                        yield f"data: {json.dumps({'event': 'step_error', 'test_id': test_id, 'step_number': step_num, 'error': reported_conclusion})}\n\n"
+                        break
 
             else:
                 # ── Gemini legacy path (OrchestratorAgent + VisionAgent) ──
@@ -3132,6 +3483,8 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                                 await asyncio.wait_for(evt.wait(), timeout=120)
                                 injected = guidance_text.pop(g_key, '')
                                 print(f"[GUIDANCE] ✅ Guidance received: {injected!r} — resuming loop")
+                                if injected:
+                                    test_operator_corrections.append(injected)
                                 goal += f"\n\nUser Guidance: {injected}"
                                 guidance_events.pop(g_key, None)
                                 # continue the loop with injected guidance
@@ -3252,6 +3605,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                                 print(f"[PAUSE] ⏱  Pause timed out for context {context_id} — resuming without guidance")
                             if g := pause_guidance.pop(context_id, None):
                                 print(f"[PAUSE] ▶  Resuming (Gemini) with guidance: {g!r}")
+                                test_operator_corrections.append(g)
                                 goal += f"\n\nUser Guidance: {g}"
                             else:
                                 print(f"[PAUSE] ▶  Resuming (Gemini) without guidance")
@@ -3266,10 +3620,10 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         test_passed = False
                         break
 
-            # ── Test complete (shared by both providers) ──
+            # ── Primary test complete (shared by both providers) ──
             test_status = "passed" if test_passed else "failed"
-            conclusion = ""
-            if provider == "claude" and cu_response:
+            conclusion = reported_conclusion
+            if not conclusion and provider == "claude" and cu_response:
                 conclusion = _redact_operator_values(
                     cu_response.text or cu_response.thinking or "",
                     operator_input_values,
@@ -3282,6 +3636,8 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                 suite_results["passed"] += 1
             else:
                 suite_results["failed"] += 1
+
+            resolved_test_ids.add(test_id)
             
             suite_results["test_results"].append({"test_id": test_id, "title": test_title, "status": test_status, "steps": test_steps})
             suite_learning_logs.append(
@@ -3290,6 +3646,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     status=test_status,
                     conclusion=conclusion,
                     steps=test_steps,
+                    operator_corrections=test_operator_corrections,
                 )
             )
             
@@ -3325,6 +3682,132 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
             
             test_complete_event = {'event': 'test_complete', 'test_id': test_id, 'status': test_status, 'steps_executed': len(test_steps), 'conclusion': conclusion}
             yield f"data: {json.dumps(test_complete_event)}\n\n"
+
+            # Only after the primary has ended and been recorded do we expose the
+            # remaining suite to Claude. This assessment has no computer tool, so it
+            # cannot prolong the primary flow or perform work solely for another test.
+            opportunistic_reports = []
+            if provider == "claude" and completion_tool_use_id:
+                pending_catalog = _pending_test_catalog(
+                    test_cases,
+                    current_test_id=test_id,
+                    resolved_test_ids=resolved_test_ids,
+                )
+                if pending_catalog:
+                    try:
+                        assessment_response = await asyncio.to_thread(
+                            agent.assess_incidental_verifications,
+                            completion_tool_use_id,
+                            pending_catalog,
+                        )
+                        if assessment_response.incidental_verification_report:
+                            opportunistic_reports = (
+                                assessment_response.incidental_verification_report.also_verified
+                            )
+                        else:
+                            print(
+                                "[SUITE-VERIFY] Post-completion assessment returned "
+                                "no structured report; continuing without secondary passes"
+                            )
+                    except Exception as e:
+                        print(
+                            f"[SUITE-VERIFY] Post-completion assessment failed for "
+                            f"{test_id}: {e}"
+                        )
+
+            # Record secondary tests fully proven by the already-finished history.
+            # Invalid, duplicate, current, and resolved IDs are ignored defensively.
+            for report in opportunistic_reports:
+                secondary_id = str(report.test_id).strip()
+                if (
+                    not secondary_id
+                    or secondary_id == test_id
+                    or secondary_id in resolved_test_ids
+                    or secondary_id not in test_cases_by_id
+                ):
+                    print(
+                        f"[SUITE-VERIFY] Ignoring invalid or resolved secondary "
+                        f"test ID: {secondary_id!r}"
+                    )
+                    continue
+
+                secondary_test_case = test_cases_by_id[secondary_id]
+                secondary_title = secondary_test_case.get("title", "Unknown Test")
+                evidence = _redact_operator_values(
+                    str(report.evidence).strip(),
+                    operator_input_values,
+                )
+                if not evidence:
+                    print(
+                        f"[SUITE-VERIFY] Ignoring {secondary_id}; no evidence supplied"
+                    )
+                    continue
+
+                secondary_conclusion = (
+                    f"Verified while executing {test_id}: {evidence}"
+                )
+
+                if cloud_run_id:
+                    try:
+                        saved_secondary = await asyncio.to_thread(
+                            cloud_create_test_result,
+                            run_id=cloud_run_id,
+                            test_case_id=secondary_id,
+                            status="passed",
+                            conclusion=secondary_conclusion,
+                            steps=[],
+                            steps_executed=0,
+                            token=request.cloud_token,
+                        )
+                        if saved_secondary:
+                            print(
+                                f"[SUITE-VERIFY] Cloud result created for {secondary_id}"
+                            )
+                        else:
+                            print(
+                                f"[SUITE-VERIFY] Cloud result creation returned no "
+                                f"document for {secondary_id}"
+                            )
+                    except Exception as e:
+                        print(
+                            f"[SUITE-VERIFY] Cloud result save failed for "
+                            f"{secondary_id}: {e}"
+                        )
+
+                resolved_test_ids.add(secondary_id)
+                suite_results["passed"] += 1
+                suite_results["test_results"].append({
+                    "test_id": secondary_id,
+                    "title": secondary_title,
+                    "status": "passed",
+                    "steps": [],
+                })
+                suite_learning_logs.append(
+                    build_suite_learning_log(
+                        test_case=secondary_test_case,
+                        status="passed",
+                        conclusion=secondary_conclusion,
+                        steps=[],
+                        operator_corrections=[],
+                    )
+                )
+
+                secondary_event = {
+                    "event": "test_complete",
+                    "test_id": secondary_id,
+                    "status": "passed",
+                    "steps_executed": 0,
+                    "conclusion": secondary_conclusion,
+                    "test_number": test_numbers_by_id[secondary_id],
+                    "opportunistic": True,
+                    "verified_during_test_id": test_id,
+                }
+                yield f"data: {json.dumps(secondary_event)}\n\n"
+                await asyncio.sleep(0)
+                print(
+                    f"[SUITE-VERIFY] ✓ {secondary_id} verified during {test_id}"
+                )
+
             await asyncio.sleep(1)
         
         # Suite complete
@@ -3347,7 +3830,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
         if should_run_context_learning(
             logs=suite_learning_logs,
             aborted=learning_aborted,
-            project_id=learning_project_id,
+            feature_id=learning_feature_id,
             cloud_token=request.cloud_token,
         ):
             yield f"data: {json.dumps({'event': 'context_learning'})}\n\n"
@@ -3360,9 +3843,11 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     api_key=request.anthropic_api_key or None,
                 )
                 learner_result = await asyncio.to_thread(
-                    learn_and_update_project,
+                    learn_and_update_contexts,
                     learner=learner,
+                    update_feature=cloud_update_feature,
                     update_project=cloud_update_project,
+                    feature_id=learning_feature_id,
                     project_id=learning_project_id,
                     cloud_token=request.cloud_token,
                     project_context=learning_project_context,
@@ -3370,21 +3855,35 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                     logs=suite_learning_logs,
                 )
                 change_summary = learner_result["change_summary"]
+                feature_updated = learner_result["feature_updated"]
+                project_updated = learner_result["project_updated"]
 
                 print(
-                    "[LEARNER] Project context updated: "
-                    f"project_id={learning_project_id}; "
+                    "[LEARNER] Context learning complete: "
+                    f"feature_id={learning_feature_id}; feature_updated={feature_updated}; "
+                    f"project_id={learning_project_id}; project_updated={project_updated}; "
                     f"summary={change_summary or 'No change summary returned'}"
                 )
-                yield f"data: {json.dumps({'event': 'context_learned', 'updated': True, 'change_summary': change_summary})}\n\n"
+                learned_event = {
+                    'event': 'context_learned',
+                    'updated': bool(feature_updated or project_updated),
+                    'feature_updated': feature_updated,
+                    'project_updated': project_updated,
+                    'change_summary': change_summary,
+                    'feature_change_summary': learner_result['feature_change_summary'],
+                    'project_change_summary': learner_result['project_change_summary'],
+                }
+                yield f"data: {json.dumps(learned_event)}\n\n"
+                if learner_result["warning"]:
+                    yield f"data: {json.dumps({'event': 'context_learning_warning', 'message': learner_result['warning']})}\n\n"
             except Exception as e:
-                print(f"[LEARNER] Project context update failed: {e}")
+                print(f"[LEARNER] Context update failed: {e}")
                 yield f"data: {json.dumps({'event': 'context_learning_warning', 'message': str(e)})}\n\n"
         else:
             print(
-                "[LEARNER] Skipping project context learning: "
+                "[LEARNER] Skipping feature/project context learning: "
                 f"logs={len(suite_learning_logs)}; aborted={learning_aborted}; "
-                f"project_id={learning_project_id or 'missing'}; "
+                f"feature_id={learning_feature_id or 'missing'}; "
                 f"cloud_token={'set' if request.cloud_token else 'missing'}"
             )
         

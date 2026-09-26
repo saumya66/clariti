@@ -21,6 +21,7 @@ import {
   type CloudTestRunDetail,
 } from '../api/client';
 import { useKeyStore } from './keyStore';
+import { queryClient } from '../lib/queryClient';
 
 export type TestRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 export type SuiteRunStatus = 'idle' | 'running' | 'complete' | 'error' | 'aborted';
@@ -35,6 +36,7 @@ export interface TestRun {
   conclusion?: string;
   steps_executed?: number;
   test_number?: number;
+  verified_during_test_id?: string;
 }
 
 export interface ActivityEntry extends Partial<StepRecord> {
@@ -80,6 +82,11 @@ function formatTime(date: Date): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function verifiedDuringTestId(conclusion?: string | null): string | undefined {
+  const match = conclusion?.match(/^Verified while executing ([^:]+):/);
+  return match?.[1];
 }
 
 interface TestSuiteExecutionState {
@@ -187,7 +194,14 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
       featureId,
       featureName,
       windowTitle,
-      tests: existingTests.map((t) => ({ ...t, status: 'pending' })),
+      tests: existingTests.map((t) => ({
+        ...t,
+        status: 'pending',
+        conclusion: undefined,
+        steps_executed: undefined,
+        test_number: undefined,
+        verified_during_test_id: undefined,
+      })),
       currentTestId: null,
       activityLog: [],
       thinking: '',
@@ -341,6 +355,8 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
                       status: data.status,
                       conclusion: data.conclusion,
                       steps_executed: data.steps_executed,
+                      test_number: data.test_number ?? t.test_number,
+                      verified_during_test_id: data.verified_during_test_id,
                     }
                   : t
               ),
@@ -380,13 +396,15 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           },
 
           onContextLearning: () => {
-            set({ projectLearningStatus: 'learning', projectLearningMessage: 'Updating project knowledge...' });
+            set({ projectLearningStatus: 'learning', projectLearningMessage: 'Updating feature and project knowledge...' });
           },
 
           onContextLearned: (data: ContextLearnedEvent) => {
             set({
               projectLearningStatus: 'updated',
-              projectLearningMessage: data.change_summary || 'Project knowledge updated.',
+              projectLearningMessage: data.change_summary || (
+                data.updated ? 'Feature and project knowledge updated.' : 'Knowledge is already up to date.'
+              ),
             });
           },
 
@@ -417,6 +435,12 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
         isPaused: false,
       });
     } finally {
+      // A cloud run is created at execution start, including aborted/error runs.
+      // Invalidate both the paginated list and its count before the user returns
+      // to the suite or Past Runs page.
+      void queryClient.invalidateQueries({
+        queryKey: ['features', featureId, 'test-runs'],
+      });
       // An older stream must never clear the controller/ID of a newer run.
       if (_executionId === executionId) {
         _abortController = null;
@@ -527,6 +551,7 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
         conclusion: result.conclusion ?? undefined,
         steps_executed: result.steps_executed,
         test_number: i + 1,
+        verified_during_test_id: verifiedDuringTestId(result.conclusion),
       };
     });
 
