@@ -2,7 +2,7 @@ import { motion } from 'motion/react';
 import { LogoMark } from './Icons';
 
 const LINKS = [
-  { label: 'Email', href: 'mailto:claritihq@gmail.com' },
+  { label: 'Email', href: 'mailto:heyclariti@gmail.com' },
   { label: 'Privacy Policy', href: '/privacy' },
   { label: 'Terms of Use', href: '/terms' },
 ];

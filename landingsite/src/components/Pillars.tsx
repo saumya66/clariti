@@ -1,5 +1,4 @@
 import { motion } from 'motion/react';
-import Eyebrow from './Eyebrow';
 import { EyeIcon, SparkIcon, QuestionIcon, MemoryIcon, CheckIcon, GlobeIcon, MonitorIcon, PhoneIcon } from './Icons';
 import AppWindow from './AppWindow';
 
@@ -68,17 +67,21 @@ function ThinkMock() {
 
 function AskMock() {
   return (
-    <AppWindow breadcrumb="clariti › run #428 › interrupted">
+    <AppWindow breadcrumb="clariti › run #428 › conversation">
       <div className="p-5">
         <div className="flex items-center gap-2 text-emerald-300">
-          <span className="text-sm">▶</span>
-          <span className="text-sm font-semibold">Running</span>
+          <span className="text-sm">◇</span>
+          <span className="text-sm font-semibold">Waiting for you</span>
           <span className="ml-auto font-mono text-[11px] text-white/35">step 6 of 12</span>
         </div>
         <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm text-white/60">
           <span className="text-violet-400">›</span>
-          Adding item to cart → heading to checkout…
+          What verification code was sent to your email?
         </div>
+        <div className="mt-2 rounded-lg border border-violet-400/25 bg-violet-500/5 px-3 py-2.5 text-sm text-white/80">
+          <span className="mr-2 text-violet-300">You</span> 482917
+        </div>
+        <p className="mt-2 text-xs text-white/50">Verified. Continuing to checkout.</p>
 
         <div className="my-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-amber-300/80">
           <span className="h-px flex-1 bg-amber-300/20" />
@@ -191,15 +194,15 @@ const PILLARS = [
     Icon: SparkIcon,
     label: 'IT THINKS',
     title: 'Built for changing products',
-    body: 'When a page is redesigned or a button is renamed, Clariti can reason through the new experience and continue toward the goal—reducing the need to constantly repair tests.',
+    body: 'When a page is redesigned or a button is renamed, Clariti reasons through the new experience and continues toward the goal. No test scripts to maintain. Nothing to repair.',
     Mock: ThinkMock,
   },
   {
     tag: 'Human-in-the-loop',
     Icon: QuestionIcon,
-    label: 'IT LISTENS',
+    label: 'IT ASKS. IT LISTENS.',
     title: 'You’re always in control.',
-    body: 'Interrupt a run whenever you need to. Give Clariti new context, correct its course, or point it in the right direction in plain English—then let it continue toward the goal.',
+    body: 'When Clariti needs information, it asks. When you spot something it missed, pause and guide it in plain English. It continues with the new context, keeping you in control.',
     Mock: AskMock,
   },
   {
@@ -231,8 +234,7 @@ export default function Pillars() {
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
           className="flex flex-col items-center"
         >
-          <Eyebrow>WHY IT WORKS</Eyebrow>
-          <h2 className="mt-5 max-w-2xl text-[clamp(2rem,4.5vw,3.25rem)] font-extrabold leading-[1.05] tracking-tight text-white">
+          <h2 className="max-w-2xl text-[clamp(2rem,4.5vw,3.25rem)] font-extrabold leading-[1.05] tracking-tight text-white">
             It works like your <span className="text-gradient">best QA hire.</span>
           </h2>
         </motion.div>

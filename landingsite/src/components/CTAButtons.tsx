@@ -50,6 +50,16 @@ export function BookDemoButton({
       href={BOOK_DEMO_URL}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={(event) => {
+        const calendly = (window as Window & {
+          Calendly?: { initPopupWidget: (options: { url: string }) => void };
+        }).Calendly;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        if (new URL(BOOK_DEMO_URL).hostname === 'calendly.com' && calendly) {
+          event.preventDefault();
+          calendly.initPopupWidget({ url: BOOK_DEMO_URL });
+        }
+      }}
       className={`group relative inline-flex items-center justify-center gap-2 overflow-hidden rounded-full font-semibold text-white shadow-lg shadow-violet-500/25 transition-all active:scale-[0.98] ${sizeCls[size]} ${className}`}
       style={{ background: 'linear-gradient(120deg,#8b5cf6,#7c3aed 55%,#6366f1)' }}
     >
@@ -57,7 +67,7 @@ export function BookDemoButton({
         className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 group-hover:translate-x-full"
         aria-hidden="true"
       />
-      Book a Demo
+      Book a Demo / Chat
       <ArrowUpRight className="h-4 w-4" />
     </a>
   );

@@ -57,8 +57,13 @@ export default function PlatformAgnostic() {
 
           {/* connectors */}
           <div className="flex justify-center py-4" aria-hidden="true">
-            <svg width="220" height="48" viewBox="0 0 220 48" fill="none">
-              <path d="M40 0 V16 Q40 24 110 24 M110 0 V24 M180 0 V16 Q180 24 110 24 M110 24 V48" stroke="rgba(168,85,247,0.35)" strokeWidth="1.5" />
+            <svg className="h-12 w-full" viewBox="0 0 660 48" fill="none" preserveAspectRatio="none">
+              <path
+                d="M105 0 V14 Q105 24 330 24 M330 0 V24 M555 0 V14 Q555 24 330 24 M330 24 V48"
+                stroke="rgba(168,85,247,0.35)"
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
+              />
             </svg>
           </div>
 

@@ -4,7 +4,7 @@ import { BookDemoButton, WatchDemoButton } from './CTAButtons';
 
 export default function FinalCTA() {
   return (
-    <section className="relative overflow-hidden py-32 sm:py-40">
+    <section className="relative overflow-hidden pb-16 pt-32 sm:pb-20 sm:pt-40">
       <Aurora className="opacity-80" />
       <div
         className="pointer-events-none absolute left-1/2 top-1/2 h-[420px] w-[720px] -translate-x-1/2 -translate-y-1/2 rounded-full"
@@ -24,9 +24,22 @@ export default function FinalCTA() {
           </p>
         </Reveal>
         <Reveal delay={0.15}>
-          <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <BookDemoButton size="lg" className="w-full sm:w-auto" />
-            <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" />
+          <div className="mt-9">
+            <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
+              <BookDemoButton size="lg" className="w-full sm:w-auto" />
+              <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" />
+            </div>
+            <p className="mx-auto mt-12 max-w-xl text-base leading-relaxed text-white/55 sm:mt-14 sm:text-lg">
+              Have feedback, questions, or something you need?
+              <br />
+              Do reach us at —{' '}
+              <a
+                href="mailto:heyclariti@gmail.com"
+                className="font-medium text-violet-300 transition-colors hover:text-violet-200"
+              >
+                heyclariti@gmail.com
+              </a>
+            </p>
           </div>
         </Reveal>
       </div>

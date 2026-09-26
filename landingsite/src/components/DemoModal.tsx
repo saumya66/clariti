@@ -39,7 +39,7 @@ export default function DemoModal({ open, onClose, videoUrl }: DemoModalProps) {
             onClick={onClose}
           />
           <motion.div
-            className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-white/10 bg-[#0e0e16] shadow-2xl"
+            className="relative w-full max-w-6xl overflow-hidden rounded-2xl border border-white/10 bg-[#0e0e16] shadow-2xl"
             initial={{ scale: 0.94, y: 16, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
             exit={{ scale: 0.96, y: 8, opacity: 0 }}

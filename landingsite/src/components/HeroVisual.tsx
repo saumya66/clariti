@@ -378,7 +378,7 @@ export default function HeroVisual() {
         </div>
         <div className="mt-2.5 flex items-center justify-between text-[7px] sm:text-[8px]">
           <span className="text-white/30">Report ready to share</span>
-          <span className="font-semibold text-violet-300">View replay →</span>
+          <span className="font-semibold text-violet-300">Review run →</span>
         </div>
       </motion.div>
 

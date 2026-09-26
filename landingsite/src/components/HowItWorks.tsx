@@ -1,4 +1,3 @@
-import Eyebrow from './Eyebrow';
 import Reveal from './Reveal';
 import HorizontalScrollSection from './HorizontalScrollSection';
 import AppWindow from './AppWindow';
@@ -115,7 +114,7 @@ const STEPS = [
     num: '03',
     label: "THAT'S IT. RUN.",
     title: 'Hit run. Watch it go.',
-    body: 'Clariti finds your live app and works through every test — clicking, typing, checking — exactly like a human would. You get results you can trust, replay, and share.',
+    body: 'Clariti finds your live app and works through every test — clicking, typing, checking — exactly like a human would. Clear results with the evidence behind every decision.',
     Mock: () => <RunnerMockup animateLog />,
   },
   {
@@ -130,8 +129,8 @@ const STEPS = [
 function Panel({ step }: { step: (typeof STEPS)[number] }) {
   const Mock = step.Mock;
   return (
-    <div className="flex w-[88vw] shrink-0 flex-col gap-2 px-1 md:w-[90vw] md:flex-row md:items-center md:gap-8 lg:w-[75vw] lg:gap-12">
-      <div className="md:w-2/5 md:shrink-0">
+    <div className="flex w-[88vw] max-w-5xl shrink-0 flex-col gap-2 px-1 md:w-[90vw] md:flex-row md:items-center md:gap-8 lg:w-[75vw] lg:gap-12">
+      <div className="md:w-2/5 md:max-w-sm md:shrink-0">
         <div className="numeral-outline text-[clamp(2rem,8vw,9rem)] font-extrabold leading-none">
           {step.num}
         </div>
@@ -144,7 +143,7 @@ function Panel({ step }: { step: (typeof STEPS)[number] }) {
         <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-white/55 sm:mt-3 sm:text-base">{step.body}</p>
       </div>
       {/* zoom shrinks layout + visual together — no dead-space compensation needed */}
-      <div className="min-w-0 flex-1 [zoom:0.58] sm:[zoom:0.75] md:[zoom:1]">
+      <div className="min-w-0 flex-1 [zoom:0.58] sm:[zoom:0.75] md:max-w-xl md:[zoom:1]">
         <Mock />
       </div>
     </div>
@@ -159,11 +158,8 @@ export default function HowItWorks() {
         mobileBreakpoint={0}
         header={
           <div className="mx-auto mb-10 max-w-6xl px-6">
-            <Reveal className="flex">
-              <Eyebrow>HOW IT WORKS</Eyebrow>
-            </Reveal>
             <Reveal delay={0.05}>
-              <h2 className="mt-5 max-w-2xl text-[clamp(2rem,4.5vw,3.25rem)] font-extrabold leading-[1.05] tracking-tight text-white">
+              <h2 className="max-w-2xl text-[clamp(2rem,4.5vw,3.25rem)] font-extrabold leading-[1.05] tracking-tight text-white">
                 Just describe it — like you&apos;d brief your QA.
               </h2>
             </Reveal>

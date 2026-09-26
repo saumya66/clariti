@@ -2,13 +2,14 @@ import { motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import Eyebrow from './Eyebrow';
 import Reveal from './Reveal';
-import { ArrowRight, EarIcon, EyeIcon, MemoryIcon, SparkIcon } from './Icons';
+import { ArrowRight, CheckIcon, EarIcon, EyeIcon, MemoryIcon, SparkIcon } from './Icons';
 
 const NODES = [
   { key: 'SEE', Icon: EyeIcon, desc: 'Looks at the screen like a user.' },
   { key: 'THINK', Icon: SparkIcon, desc: 'Decides what to do next.' },
   { key: 'ACT', Icon: ArrowRight, desc: 'Clicks, types, moves through the app.' },
-  { key: 'LISTEN', Icon: EarIcon, desc: 'Listens for your inputs.' },
+  { key: 'ASK / LISTEN', Icon: EarIcon, desc: 'Asks when it needs help. Listens when you guide it.' },
+  { key: 'VERIFY', Icon: CheckIcon, desc: 'Checks that the result matches what you expected.' },
   { key: 'LEARN', Icon: MemoryIcon, desc: 'Learns from every run.' },
 ];
 
@@ -46,7 +47,7 @@ export default function AgenticLoop() {
         <Reveal delay={0.1}>
           <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-white/55 sm:text-lg">
             Under the hood, Clariti runs a tight loop — it looks at the screen, decides what to do,
-            acts, listens for your inputs, and learns from every run. The same loop your QA runs
+            acts, verifies the result, asks when it needs help, listens to your guidance, and learns from every run. The same loop your QA runs
             in their head, now running on its own.
           </p>
         </Reveal>
@@ -88,7 +89,7 @@ export default function AgenticLoop() {
           {/* center label */}
           <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center">
             <p className="font-mono text-[11px] tracking-[0.25em] text-white/30">THE LOOP</p>
-            <p className="mt-1 text-2xl font-extrabold text-white">
+            <p className="mt-1 text-xl font-extrabold text-white">
               {NODES[active].key}
             </p>
             <p className="mx-auto mt-1 max-w-[150px] text-xs leading-snug text-white/45">
@@ -126,15 +127,6 @@ export default function AgenticLoop() {
                     {n.key}
                   </span>
                 </motion.div>
-                {/* LISTEN → user input */}
-                {n.key === 'LISTEN' && (
-                  <motion.div
-                    animate={{ opacity: isActive ? 1 : 0.3 }}
-                    className="absolute left-1/2 top-full mt-2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/50"
-                  >
-                    <span>🧑</span> you
-                  </motion.div>
-                )}
               </div>
             );
           })}
