@@ -223,7 +223,8 @@ export default function HeroVisual() {
       >
         <div className="mb-2 flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-300/15 bg-emerald-400/8 px-2 py-1 font-mono text-[6px] tracking-widest text-emerald-300 sm:text-[7px]">
           <span className="h-1 w-1 animate-pulse-soft rounded-full bg-emerald-300" />
-          ANDROID · PIXEL EMULATOR
+          <span className="sm:hidden">ANDROID</span>
+          <span className="hidden sm:inline">ANDROID · PIXEL EMULATOR</span>
         </div>
         <div className="aspect-9/17 rounded-3xl border border-white/15 bg-[#171722] p-1.5 shadow-[0_0_35px_rgba(124,58,237,0.24)]">
           <div className="flex h-full flex-col overflow-hidden rounded-[1.15rem] border border-white/8 bg-[#0d0d15]">
