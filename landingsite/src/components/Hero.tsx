@@ -58,8 +58,9 @@ export default function Hero() {
               transition={{ duration: 0.75, delay: 0.22, ease: [0.16, 1, 0.3, 1] }}
               className="mt-7 max-w-xl text-base leading-relaxed text-white/60 sm:text-lg"
             >
-              Clariti tests your product the way a real QA does—it sees your app, works through
-              critical flows, notices what looks wrong, and tells you what broke.
+              Clariti tests your product the way a human QA does—visually and autonomously. It asks
+              questions, listens when you guide it, and remembers what it learns—getting smarter
+              with every run.
             </motion.p>
 
             <motion.div
