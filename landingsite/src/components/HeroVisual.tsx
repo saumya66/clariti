@@ -26,9 +26,10 @@ export default function HeroVisual() {
       <div className="absolute left-[27%] top-[31%] h-40 w-40 rounded-full bg-fuchsia-400/8 blur-[55px]" />
 
       <svg
-        className="absolute inset-0 hidden h-full w-full overflow-visible sm:block"
+        className="absolute inset-0 h-full w-full overflow-visible"
         viewBox="0 0 620 465"
         fill="none"
+        preserveAspectRatio="none"
       >
         <defs>
           <linearGradient id="story-line" x1="180" y1="90" x2="530" y2="390">
@@ -43,7 +44,7 @@ export default function HeroVisual() {
 
         {CONNECTIONS.map((path, index) => (
           <g key={path}>
-            <path d={path} stroke="url(#story-line)" strokeWidth="1.5" />
+            <path d={path} stroke="url(#story-line)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
             <motion.path
               d={path}
               pathLength={1}
@@ -51,6 +52,7 @@ export default function HeroVisual() {
               strokeWidth="3"
               strokeLinecap="round"
               strokeDasharray="0.025 0.975"
+              vectorEffect="non-scaling-stroke"
               filter="url(#story-glow)"
               initial={{ strokeDashoffset: 1 }}
               animate={{ strokeDashoffset: 0 }}

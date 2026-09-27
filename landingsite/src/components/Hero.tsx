@@ -66,10 +66,10 @@ export default function Hero() {
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.75, delay: 0.34, ease: [0.16, 1, 0.3, 1] }}
-              className="mt-9 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center"
+              className="mt-9 flex flex-col items-center gap-3 sm:flex-row"
             >
-              <BookDemoButton size="lg" className="w-full sm:w-auto" trackingLocation="hero" />
-              <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" trackingLocation="hero" />
+              <BookDemoButton size="lg" trackingLocation="hero" />
+              <WatchDemoButton size="lg" variant="ghost" trackingLocation="hero" />
             </motion.div>
           </div>
 
