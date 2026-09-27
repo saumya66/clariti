@@ -13,7 +13,7 @@ const VALUES = [
     body: 'Describe what should work in plain English. Clariti generates and runs tests on the platform you choose—web, desktop, Android, or iOS—with no test code to write or maintain.',
   },
   {
-    heading: 'SCALE QA, NOT HEADCOUNT.',
+    heading: 'SCALE QA.',
     body: 'Clariti saves you time and capital by running QA autonomously—so your team can focus on what matters most: building the business.',
   },
 ];
@@ -68,8 +68,8 @@ export default function Hero() {
               transition={{ duration: 0.75, delay: 0.34, ease: [0.16, 1, 0.3, 1] }}
               className="mt-9 flex flex-col items-center gap-3 sm:flex-row"
             >
-              <BookDemoButton size="lg" trackingLocation="hero" />
-              <WatchDemoButton size="lg" variant="ghost" trackingLocation="hero" />
+              <BookDemoButton size="lg" className="w-56" trackingLocation="hero" />
+              <WatchDemoButton size="lg" variant="ghost" className="w-56" trackingLocation="hero" />
             </motion.div>
           </div>
 

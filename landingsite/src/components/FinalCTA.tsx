@@ -27,8 +27,8 @@ export default function FinalCTA() {
         <Reveal delay={0.15}>
           <div className="mt-9">
             <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <BookDemoButton size="lg" trackingLocation="final_cta" />
-              <WatchDemoButton size="lg" variant="ghost" trackingLocation="final_cta" />
+              <BookDemoButton size="lg" className="w-56" trackingLocation="final_cta" />
+              <WatchDemoButton size="lg" variant="ghost" className="w-56" trackingLocation="final_cta" />
             </div>
             <p className="mx-auto mt-12 max-w-xl text-base leading-relaxed text-white/55 sm:mt-14 sm:text-lg">
               Have feedback, questions, or something you need?
