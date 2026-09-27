@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BOOK_DEMO_URL, DEMO_VIDEO_URL } from '../lib/config';
 import DemoModal from './DemoModal';
 import { ArrowUpRight, PlayIcon } from './Icons';
+import { trackEvent } from '../lib/analytics';
 
 type Size = 'md' | 'lg';
 
@@ -14,10 +15,12 @@ export function WatchDemoButton({
   size = 'lg',
   variant = 'light',
   className = '',
+  trackingLocation,
 }: {
   size?: Size;
   variant?: 'light' | 'ghost';
   className?: string;
+  trackingLocation: string;
 }) {
   const [open, setOpen] = useState(false);
   const base =
@@ -27,7 +30,10 @@ export function WatchDemoButton({
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          trackEvent('watch_demo_open', { cta_location: trackingLocation });
+          setOpen(true);
+        }}
         className={`group inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-all active:scale-[0.98] ${sizeCls[size]} ${base} ${className}`}
       >
         <PlayIcon className="h-3.5 w-3.5 translate-x-[1px]" />
@@ -41,9 +47,11 @@ export function WatchDemoButton({
 export function BookDemoButton({
   size = 'lg',
   className = '',
+  trackingLocation,
 }: {
   size?: Size;
   className?: string;
+  trackingLocation: string;
 }) {
   return (
     <a
@@ -51,6 +59,7 @@ export function BookDemoButton({
       target="_blank"
       rel="noopener noreferrer"
       onClick={(event) => {
+        trackEvent('book_demo_click', { cta_location: trackingLocation });
         const calendly = (window as Window & {
           Calendly?: { initPopupWidget: (options: { url: string }) => void };
         }).Calendly;

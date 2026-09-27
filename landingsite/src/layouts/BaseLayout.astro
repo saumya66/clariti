@@ -25,17 +25,28 @@ const jsonLd = JSON.stringify({
   operatingSystem: 'macOS',
   description,
   url: 'https://claritihq.com',
-  offers: {
-    '@type': 'Offer',
-    price: '0',
-    priceCurrency: 'USD',
-  },
 });
 ---
 
 <!doctype html>
 <html lang="en" class="scroll-smooth">
   <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-J0VQ47115Z"></script>
+    <script is:inline>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() { dataLayer.push(arguments); }
+      gtag('js', new Date());
+      gtag('config', 'G-J0VQ47115Z');
+
+      window.addEventListener('message', function (event) {
+        if (event.origin !== 'https://calendly.com') return;
+        if (event.data?.event === 'calendly.event_scheduled') {
+          gtag('event', 'generate_lead', { method: 'Calendly' });
+        }
+      });
+    </script>
+
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0a0a0f" />

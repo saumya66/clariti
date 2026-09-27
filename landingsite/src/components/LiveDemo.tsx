@@ -48,7 +48,7 @@ export default function LiveDemo() {
         </div>
 
         <Reveal delay={0.15} className="mt-10 flex justify-center">
-          <WatchDemoButton size="lg" variant="light" />
+          <WatchDemoButton size="lg" variant="light" trackingLocation="live_demo" />
         </Reveal>
       </div>
     </section>

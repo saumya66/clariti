@@ -1,6 +1,7 @@
 import Aurora from './Aurora';
 import Reveal from './Reveal';
 import { BookDemoButton, WatchDemoButton } from './CTAButtons';
+import { trackEvent } from '../lib/analytics';
 
 export default function FinalCTA() {
   return (
@@ -26,8 +27,8 @@ export default function FinalCTA() {
         <Reveal delay={0.15}>
           <div className="mt-9">
             <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <BookDemoButton size="lg" className="w-full sm:w-auto" />
-              <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" />
+              <BookDemoButton size="lg" className="w-full sm:w-auto" trackingLocation="final_cta" />
+              <WatchDemoButton size="lg" variant="ghost" className="w-full sm:w-auto" trackingLocation="final_cta" />
             </div>
             <p className="mx-auto mt-12 max-w-xl text-base leading-relaxed text-white/55 sm:mt-14 sm:text-lg">
               Have feedback, questions, or something you need?
@@ -35,6 +36,7 @@ export default function FinalCTA() {
               Do reach us at —{' '}
               <a
                 href="mailto:heyclariti@gmail.com"
+                onClick={() => trackEvent('contact_email_click', { cta_location: 'final_cta' })}
                 className="font-medium text-violet-300 transition-colors hover:text-violet-200"
               >
                 heyclariti@gmail.com

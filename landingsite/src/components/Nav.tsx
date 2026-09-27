@@ -41,7 +41,7 @@ export default function Nav() {
         </div>
 
         <div className="ml-auto hidden md:block">
-          <BookDemoButton size="md" />
+          <BookDemoButton size="md" trackingLocation="nav" />
         </div>
 
         {/* Mobile toggle */}
@@ -71,7 +71,7 @@ export default function Nav() {
               </a>
             ))}
             <div className="mt-2 px-1">
-              <BookDemoButton size="md" className="w-full" />
+              <BookDemoButton size="md" className="w-full" trackingLocation="mobile_nav" />
             </div>
           </div>
         </div>

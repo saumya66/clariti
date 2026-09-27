@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
 import { LogoMark } from './Icons';
+import { trackEvent } from '../lib/analytics';
 
 const LINKS = [
   { label: 'Email', href: 'mailto:heyclariti@gmail.com' },
@@ -21,6 +22,11 @@ export default function Footer() {
             <a
               key={l.label}
               href={l.href}
+              onClick={() => {
+                if (l.href.startsWith('mailto:')) {
+                  trackEvent('contact_email_click', { cta_location: 'footer' });
+                }
+              }}
               className="group relative text-sm text-white/50 transition-colors hover:text-white"
             >
               {l.label}
