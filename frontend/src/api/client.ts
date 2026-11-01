@@ -611,6 +611,7 @@ export interface CloudTestCase {
   category?: string | null;
   generated_by_model?: string | null;
   created_at?: string;
+  deleted_at?: string | null;
 }
 
 export interface TestPlanResponse {
@@ -1348,9 +1349,24 @@ export async function generateFeatureTests(
   );
 }
 
-export async function listTestCasesByFeature(featureId: string): Promise<CloudTestCase[]> {
+export async function listTestCasesByFeature(
+  featureId: string,
+  includeDeleted: boolean = false
+): Promise<CloudTestCase[]> {
   const response = await cloudApiClient.get<CloudTestCase[]>(
-    `/api/v1/test-cases/by-feature/${featureId}`
+    `/api/v1/test-cases/by-feature/${featureId}`,
+    { params: includeDeleted ? { include_deleted: true } : undefined }
+  );
+  return response.data;
+}
+
+export async function bulkDeleteTestCases(
+  featureId: string,
+  testCaseIds: string[]
+): Promise<{ deleted: number; test_case_ids: string[] }> {
+  const response = await cloudApiClient.post<{ deleted: number; test_case_ids: string[] }>(
+    '/api/v1/test-cases/bulk-delete',
+    { feature_id: featureId, test_case_ids: testCaseIds }
   );
   return response.data;
 }

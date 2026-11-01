@@ -184,7 +184,7 @@ def save_context_items_batch(
 
 # ─── Test cases ────────────────────────────────────────────────────────────
 def save_test_cases_bulk(feature_id: str, test_cases: list[dict], token: Optional[str] = None) -> list[dict]:
-    """Delete existing test cases for a feature then bulk-insert new ones."""
+    """Archive existing active test cases for a feature, then bulk-insert new ones."""
     _request("DELETE", f"/api/v1/test-cases/by-feature/{feature_id}", token=token)
     if not test_cases:
         return []

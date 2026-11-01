@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from bson import ObjectId
 from pydantic import BaseModel
 from pymongo.database import Database
 from typing import List
@@ -25,11 +26,16 @@ def _verify_feature_owner(db: Database, feature_id: str, user_id: str):
 @router.get("/by-feature/{feature_id}", response_model=List[TestCase])
 def list_test_cases(
     feature_id: str,
+    include_deleted: bool = False,
     db: Database = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     _verify_feature_owner(db, feature_id, current_user["id"])
-    docs = test_case_service.get_multi_by_feature(db, feature_id=feature_id)
+    docs = test_case_service.get_multi_by_feature(
+        db,
+        feature_id=feature_id,
+        include_deleted=include_deleted,
+    )
     return [TestCase(**d) for d in docs]
 
 
@@ -49,6 +55,11 @@ class TestCaseBulkCreate(BaseModel):
     items: List[TestCaseCreate]
 
 
+class TestCaseBulkDelete(BaseModel):
+    feature_id: str
+    test_case_ids: List[str]
+
+
 @router.post("/bulk", response_model=List[TestCase])
 def create_test_cases_bulk(
     body: TestCaseBulkCreate,
@@ -61,6 +72,39 @@ def create_test_cases_bulk(
             raise HTTPException(status_code=400, detail="All items must have matching feature_id")
     docs = test_case_service.create_bulk(db, items=[i.model_dump() for i in body.items])
     return [TestCase(**d) for d in docs]
+
+
+@router.post("/bulk-delete")
+def delete_test_cases_bulk(
+    body: TestCaseBulkDelete,
+    db: Database = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    _verify_feature_owner(db, body.feature_id, current_user["id"])
+
+    test_case_ids = list(dict.fromkeys(body.test_case_ids))
+    if not test_case_ids:
+        raise HTTPException(status_code=400, detail="Select at least one test case")
+    if any(not ObjectId.is_valid(test_case_id) for test_case_id in test_case_ids):
+        raise HTTPException(status_code=404, detail="One or more test cases were not found")
+
+    active_count = test_case_service.count_active_by_ids(
+        db,
+        feature_id=body.feature_id,
+        ids=test_case_ids,
+    )
+    if active_count != len(test_case_ids):
+        raise HTTPException(status_code=404, detail="One or more test cases were not found")
+
+    deleted = test_case_service.archive_bulk(
+        db,
+        feature_id=body.feature_id,
+        ids=test_case_ids,
+    )
+    if deleted != len(test_case_ids):
+        raise HTTPException(status_code=409, detail="The test suite changed. Refresh and try again")
+
+    return {"deleted": deleted, "test_case_ids": test_case_ids}
 
 
 @router.get("/{test_case_id}", response_model=TestCase)

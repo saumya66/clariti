@@ -17,6 +17,9 @@ import {
   XCircle,
   X,
   History,
+  Pencil,
+  Trash2,
+  Check,
 } from 'lucide-react';
 import {
   Breadcrumb,
@@ -32,7 +35,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { useProject, useProjectFeatures, useFeatureTestCases, useFeatureTestRuns } from '@/hooks/useProjectsQueries';
+import {
+  useProject,
+  useProjectFeatures,
+  useFeatureTestCases,
+  useFeatureTestRuns,
+  useBulkDeleteTestCases,
+} from '@/hooks/useProjectsQueries';
 import { useWindows } from '@/hooks';
 import { cn } from '@/lib/utils';
 import type { CloudTestCase, WindowInfo } from '@/api/client';
@@ -91,7 +100,17 @@ const PRIORITY_META: { key: string; label: string; dot: string }[] = [
   { key: 'low',      label: 'Low Priority',      dot: 'bg-green-500' },
 ];
 
-function TestCaseCard({ tc }: { tc: CloudTestCase }) {
+function TestCaseCard({
+  tc,
+  editing,
+  selected,
+  onSelectedChange,
+}: {
+  tc: CloudTestCase;
+  editing: boolean;
+  selected: boolean;
+  onSelectedChange: (selected: boolean) => void;
+}) {
   const [expanded, setExpanded] = React.useState(false);
 
   return (
@@ -101,10 +120,33 @@ function TestCaseCard({ tc }: { tc: CloudTestCase }) {
         priorityAccentBorder(tc.priority)
       )}
     >
-      <button
-        onClick={() => setExpanded((p) => !p)}
-        className="flex w-full items-start gap-4 px-4 py-3.5 text-left transition-colors hover:bg-[#fafafd]"
-      >
+      <div className="flex items-start">
+        {editing && (
+          <div className="shrink-0 pl-4 pt-4">
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={`${selected ? 'Deselect' : 'Select'} ${tc.test_key}: ${tc.title}`}
+              onClick={() => onSelectedChange(!selected)}
+              className={cn(
+                'flex size-5 items-center justify-center rounded border transition-colors',
+                selected
+                  ? 'border-red-500 bg-red-500 text-white'
+                  : 'border-[#c9c9d2] bg-white text-transparent hover:border-red-400'
+              )}
+            >
+              <Check className="size-3.5" strokeWidth={3} />
+            </button>
+          </div>
+        )}
+        <button
+          onClick={() => setExpanded((p) => !p)}
+          className={cn(
+            'flex min-w-0 flex-1 items-start gap-4 px-4 py-3.5 text-left transition-colors hover:bg-[#fafafd]',
+            editing && 'pl-3'
+          )}
+        >
         <span className="shrink-0 font-mono text-[11px] font-semibold text-muted-foreground mt-0.5 w-12">
           {tc.test_key}
         </span>
@@ -125,7 +167,8 @@ function TestCaseCard({ tc }: { tc: CloudTestCase }) {
         <div className="shrink-0 text-muted-foreground mt-0.5">
           {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
         </div>
-      </button>
+        </button>
+      </div>
 
       {expanded && (
         <div className="space-y-3 border-t border-[#ececf1] px-4 pb-4 pt-3">
@@ -330,8 +373,12 @@ function FeatureDetailPage() {
   const { features } = useProjectFeatures(projectId);
   const { testCases, loading, error } = useFeatureTestCases(featureId);
   const { runs, totalRuns } = useFeatureTestRuns(featureId);
+  const deleteTests = useBulkDeleteTestCases(featureId, projectId);
   const [runModalOpen, setRunModalOpen] = React.useState(false);
   const [fullContextOpen, setFullContextOpen] = React.useState(false);
+  const [editingTests, setEditingTests] = React.useState(false);
+  const [selectedTestIds, setSelectedTestIds] = React.useState<Set<string>>(new Set());
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
 
   const feature = features.find((f) => f.id === featureId);
   const lastRun = runs[0] ?? null;
@@ -356,6 +403,44 @@ function FeatureDetailPage() {
         featureName: feature?.name ?? '',
       },
     });
+  };
+
+  const selectableTestIds = React.useMemo(
+    () => testCases.flatMap((testCase) => testCase.id ? [testCase.id] : []),
+    [testCases]
+  );
+
+  const leaveEditMode = () => {
+    setEditingTests(false);
+    setSelectedTestIds(new Set());
+    setDeleteDialogOpen(false);
+    deleteTests.reset();
+  };
+
+  const toggleTestSelection = (testCaseId: string, selected: boolean) => {
+    setSelectedTestIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(testCaseId);
+      else next.delete(testCaseId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedTestIds((current) => (
+      current.size === selectableTestIds.length
+        ? new Set()
+        : new Set(selectableTestIds)
+    ));
+  };
+
+  const confirmBulkDelete = async () => {
+    try {
+      await deleteTests.mutateAsync(Array.from(selectedTestIds));
+      leaveEditMode();
+    } catch {
+      // The mutation error is rendered in the confirmation dialog.
+    }
   };
 
   return (
@@ -453,6 +538,59 @@ function FeatureDetailPage() {
 
           {/* ── Left: test cases ── */}
           <div className="flex-1 min-w-0">
+            {!loading && !error && testCases.length > 0 && (
+              <div className="mb-3 flex min-h-9 items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Test cases</p>
+                  {editingTests && (
+                    <p className="text-xs text-muted-foreground">
+                      {selectedTestIds.size} of {selectableTestIds.length} selected
+                    </p>
+                  )}
+                </div>
+                {editingTests ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleSelectAll}
+                      disabled={deleteTests.isPending}
+                      className="rounded-lg px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      {selectedTestIds.size === selectableTestIds.length ? 'Deselect all' : 'Select all'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={leaveEditMode}
+                      disabled={deleteTests.isPending}
+                      className="rounded-lg border border-[#ececf1] bg-white px-3 py-1.5 text-xs font-semibold text-foreground transition-colors hover:bg-[#f5f5f8] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        deleteTests.reset();
+                        setDeleteDialogOpen(true);
+                      }}
+                      disabled={selectedTestIds.size === 0 || deleteTests.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-red-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 className="size-3.5" />
+                      Delete selected
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setEditingTests(true)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#ececf1] bg-white px-3 py-1.5 text-xs font-semibold text-foreground transition-colors hover:bg-[#f5f5f8]"
+                  >
+                    <Pencil className="size-3.5" />
+                    Edit
+                  </button>
+                )}
+              </div>
+            )}
             {loading ? (
               <div className="space-y-3">
                 {[...Array(4)].map((_, i) => (
@@ -492,7 +630,15 @@ function FeatureDetailPage() {
             ) : (
               <div className="space-y-2.5">
                 {testCases.map((tc) => (
-                  <TestCaseCard key={tc.id ?? tc.test_key} tc={tc} />
+                  <TestCaseCard
+                    key={tc.id ?? tc.test_key}
+                    tc={tc}
+                    editing={editingTests}
+                    selected={!!tc.id && selectedTestIds.has(tc.id)}
+                    onSelectedChange={(selected) => {
+                      if (tc.id) toggleTestSelection(tc.id, selected);
+                    }}
+                  />
                 ))}
               </div>
             )}
@@ -665,6 +811,59 @@ function FeatureDetailPage() {
             <p className="whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
               {feature?.context_summary}
             </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!deleteTests.isPending) {
+            setDeleteDialogOpen(open);
+            if (!open) deleteTests.reset();
+          }
+        }}
+      >
+        <DialogContent className="max-w-md gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-[#ececf1] px-6 py-5">
+            <DialogTitle>Delete selected tests?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 px-6 py-5">
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {selectedTestIds.size} selected test{selectedTestIds.size !== 1 ? 's' : ''} will be removed from this suite and will not run again.
+            </p>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs leading-relaxed text-emerald-800">
+              Results from previous runs will remain available in Past Runs.
+            </div>
+            {deleteTests.error && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
+                <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                <span>{deleteTests.error.message}</span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-[#ececf1] bg-muted/20 px-6 py-4">
+            <button
+              type="button"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleteTests.isPending}
+              className="rounded-lg border border-[#ececf1] bg-white px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-[#f5f5f8] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmBulkDelete}
+              disabled={deleteTests.isPending || selectedTestIds.size === 0}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deleteTests.isPending ? (
+                <RefreshCw className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )}
+              {deleteTests.isPending ? 'Deleting…' : `Delete ${selectedTestIds.size}`}
+            </button>
           </div>
         </DialogContent>
       </Dialog>

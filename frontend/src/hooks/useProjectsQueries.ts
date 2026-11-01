@@ -15,6 +15,7 @@ import {
   listFeaturesByProject,
   listProjectContextItems,
   listTestCasesByFeature,
+  bulkDeleteTestCases,
   buildFeatureContext,
   generateFeatureTests,
   saveFeatureTests,
@@ -238,16 +239,20 @@ export function useProjectContextItems(projectId: string | undefined) {
   };
 }
 
-export function testCasesQueryKey(featureId: string) {
-  return ['features', featureId, 'test-cases'] as const;
+export function testCasesQueryKey(featureId: string, includeDeleted: boolean = false) {
+  return ['features', featureId, 'test-cases', includeDeleted ? 'all' : 'active'] as const;
 }
 
-export function useFeatureTestCases(featureId: string | undefined) {
+export function useFeatureTestCases(
+  featureId: string | undefined,
+  options: { includeDeleted?: boolean } = {}
+) {
   const token = useAuthStore((s) => s.token);
+  const includeDeleted = options.includeDeleted ?? false;
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: testCasesQueryKey(featureId ?? ''),
-    queryFn: () => listTestCasesByFeature(featureId!),
+    queryKey: testCasesQueryKey(featureId ?? '', includeDeleted),
+    queryFn: () => listTestCasesByFeature(featureId!, includeDeleted),
     enabled: !!token && !!featureId,
   });
 
@@ -257,6 +262,20 @@ export function useFeatureTestCases(featureId: string | undefined) {
     error: error?.message ?? null,
     refetch,
   };
+}
+
+export function useBulkDeleteTestCases(featureId: string, projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (testCaseIds: string[]) => bulkDeleteTestCases(featureId, testCaseIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['features', featureId, 'test-cases'],
+      });
+      queryClient.invalidateQueries({ queryKey: featuresQueryKey(projectId) });
+    },
+  });
 }
 
 export function useCreateFeature(projectId: string) {

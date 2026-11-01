@@ -36,3 +36,4 @@ class TestCase(BaseModel):
     category: Optional[str] = None
     generated_by_model: Optional[str] = None
     created_at: datetime
+    deleted_at: Optional[datetime] = None

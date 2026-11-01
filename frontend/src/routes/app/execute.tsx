@@ -286,7 +286,9 @@ function ExecutePage() {
   const { token, user } = useAuthStore();
   const router = useRouter();
   const isReplayMode = !!runId;
-  const { testCases } = useFeatureTestCases(featureId ?? '');
+  const { testCases, loading: testCasesLoading } = useFeatureTestCases(featureId ?? '', {
+    includeDeleted: isReplayMode,
+  });
   const { runDetail } = useTestRunDetail(isReplayMode ? runId : undefined);
   const activityEndRef = React.useRef<HTMLDivElement>(null);
   const [thinkingExpanded, setThinkingExpanded] = React.useState(true);
@@ -332,7 +334,7 @@ function ExecutePage() {
 
   // Replay mode: populate store from API once data is ready
   React.useEffect(() => {
-    if (isReplayMode && testCases.length > 0 && runDetail) {
+    if (isReplayMode && !testCasesLoading && runDetail) {
       loadPastRun(testCases, runDetail);
       // Auto-select first test so the right panel is populated
       if (runDetail.results.length > 0) {
@@ -340,7 +342,7 @@ function ExecutePage() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReplayMode, testCases.length, runDetail]);
+  }, [isReplayMode, testCasesLoading, testCases.length, runDetail]);
 
   // Live mode: Pre-populate test list once test cases load (after reset, status is 'idle')
   React.useEffect(() => {

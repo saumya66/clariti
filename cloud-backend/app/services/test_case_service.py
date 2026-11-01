@@ -14,8 +14,17 @@ class TestCaseService:
         doc = db[self.COL].find_one({"_id": ObjectId(id)})
         return doc_to_dict(doc)
 
-    def get_multi_by_feature(self, db: Database, *, feature_id: str) -> List[dict]:
-        cursor = db[self.COL].find({"feature_id": feature_id}).sort("test_key", 1)
+    def get_multi_by_feature(
+        self,
+        db: Database,
+        *,
+        feature_id: str,
+        include_deleted: bool = False,
+    ) -> List[dict]:
+        query = {"feature_id": feature_id}
+        if not include_deleted:
+            query["deleted_at"] = None
+        cursor = db[self.COL].find(query).sort("test_key", 1)
         return [doc_to_dict(d) for d in cursor]
 
     def create(self, db: Database, *, data: dict) -> dict:
@@ -60,9 +69,33 @@ class TestCaseService:
         db[self.COL].update_one({"_id": ObjectId(id)}, {"$set": fields})
         return self.get(db, id=id)
 
+    def archive_bulk(self, db: Database, *, feature_id: str, ids: List[str]) -> int:
+        object_ids = [ObjectId(id) for id in ids]
+        result = db[self.COL].update_many(
+            {
+                "_id": {"$in": object_ids},
+                "feature_id": feature_id,
+                "deleted_at": None,
+            },
+            {"$set": {"deleted_at": datetime.now(timezone.utc)}},
+        )
+        return result.modified_count
+
+    def count_active_by_ids(self, db: Database, *, feature_id: str, ids: List[str]) -> int:
+        object_ids = [ObjectId(id) for id in ids]
+        return db[self.COL].count_documents({
+            "_id": {"$in": object_ids},
+            "feature_id": feature_id,
+            "deleted_at": None,
+        })
+
     def delete_by_feature(self, db: Database, *, feature_id: str) -> int:
-        result = db[self.COL].delete_many({"feature_id": feature_id})
-        return result.deleted_count
+        """Archive the active suite while retaining test metadata for past-run replay."""
+        result = db[self.COL].update_many(
+            {"feature_id": feature_id, "deleted_at": None},
+            {"$set": {"deleted_at": datetime.now(timezone.utc)}},
+        )
+        return result.modified_count
 
 
 test_case_service = TestCaseService()

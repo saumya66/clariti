@@ -290,7 +290,7 @@ Frontend
 
 ```
 Frontend  →  saveFeatureTests(featureId, selectedTestCases, token)
-           →  DELETE /api/v1/test-cases/by-feature/{id} (cloud)  (clear old tests)
+           →  DELETE /api/v1/test-cases/by-feature/{id} (cloud)  (archive old active tests)
            →  POST /api/v1/test-cases/bulk (cloud)               (save new tests)
            →  PATCH /api/v1/features/{id}  status = "tests_generated"
 ```
@@ -299,6 +299,47 @@ Frontend  →  saveFeatureTests(featureId, selectedTestCases, token)
 - `frontend/src/components/CreateTestFlow/CreateTestFlow.tsx`
 - `backend/main.py` → `cloud_build_feature_context`, `cloud_generate_feature_tests`
 - `backend/agents/test_planner_agent.py`
+
+#### Bulk test removal from the test-suite details page
+
+The test-suite details page supports an explicit selection mode for removing tests:
+
+```text
+User clicks Edit
+  → a selector appears beside every active test case
+  → user selects one or more tests (or Select all)
+  → user clicks Delete selected
+  → confirmation explains that future runs change but Past Runs are preserved
+  → frontend calls POST /api/v1/test-cases/bulk-delete
+  → active test-case queries are refreshed
+```
+
+The cloud request contains the owning feature and the complete selection:
+
+```json
+{
+  "feature_id": "<feature id>",
+  "test_case_ids": ["<test id 1>", "<test id 2>"]
+}
+```
+
+Deletion is intentionally implemented as archival. The backend sets `deleted_at` on the
+selected test-case records after verifying that every requested test is active, belongs
+to the requested feature, and that the feature belongs to the current user. Normal suite
+loading excludes archived tests, so they disappear from the details page and are not
+included in future executions. The operation does not remove `test_runs` or
+`test_results`.
+
+Past-run replay requests test cases with `include_deleted=true`. This allows the replay
+store to resolve the original test key, title, goal, and expected result instead of
+showing an archived test as `Unknown Test`. The same preservation rule applies when a
+newly generated suite replaces the current suite: the previous active records are
+archived before the new records are inserted.
+
+Selection state is local to the details page. Cancel clears it, an empty selection cannot
+be submitted, and the confirmation dialog remains open with the backend error if the
+suite changed concurrently. A run already in progress keeps the test list it started
+with; archival only affects later runs.
 
 ---
 

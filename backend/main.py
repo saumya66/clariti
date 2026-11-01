@@ -4406,7 +4406,7 @@ class SaveFeatureTestsRequest(BaseModel):
 async def cloud_save_feature_tests(feature_id: str, request: SaveFeatureTestsRequest):
     """
     Save approved test cases to the cloud backend.
-    Deletes any existing test cases for this feature first, then bulk-inserts.
+    Archives any existing active test cases for this feature first, then bulk-inserts.
     Test cases arrive already in cloud schema format — just inject feature_id.
     """
     cloud_tests = [{"feature_id": feature_id, **tc} for tc in request.test_cases]
