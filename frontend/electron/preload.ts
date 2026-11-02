@@ -5,11 +5,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   requestUserAttention: () => ipcRenderer.invoke('request-user-attention'),
 
-  // API key management
-  saveAnthropicKey: (key: string) => ipcRenderer.invoke('save-anthropic-key', key),
-  getAnthropicKey: (): Promise<string | null> => ipcRenderer.invoke('get-anthropic-key'),
-  deleteAnthropicKey: () => ipcRenderer.invoke('delete-anthropic-key'),
-
   // macOS permission checking — reads Clariti.app TCC status via systemPreferences
   checkPermissions: (): Promise<{ screen_recording: boolean; accessibility: boolean }> =>
     ipcRenderer.invoke('check-permissions'),

@@ -14,9 +14,6 @@ interface Window {
     getBackendUrl: () => Promise<string>;
     platform: string;
     requestUserAttention: () => Promise<void>;
-    saveAnthropicKey: (key: string) => Promise<void>;
-    getAnthropicKey: () => Promise<string | null>;
-    deleteAnthropicKey: () => Promise<void>;
     checkPermissions: () => Promise<{ screen_recording: boolean; accessibility: boolean }>;
     requestScreenRecording: () => Promise<boolean>;
     requestAccessibility: () => Promise<boolean>;

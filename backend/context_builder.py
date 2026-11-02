@@ -29,9 +29,11 @@ from agents import (
 )
 
 
-# Data directories
-DATA_DIR = Path(__file__).parent / "data" / "contexts"
-RAW_DIR = Path(__file__).parent / "data" / "raw"
+# User data must live outside the packaged executable. Electron supplies this
+# path from app.getPath('userData'); source/dev runs retain the old location.
+_DATA_ROOT = Path(os.getenv("CLARITI_DATA_DIR", Path(__file__).parent / "data"))
+DATA_DIR = _DATA_ROOT / "contexts"
+RAW_DIR = _DATA_ROOT / "raw"
 
 
 class ContextBuilder:

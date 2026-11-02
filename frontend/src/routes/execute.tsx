@@ -6,7 +6,7 @@ import { InstructionInput } from '../components/InstructionInput';
 import { ExecutionPanel } from '../components/ExecutionPanel';
 import { useWindows } from '../hooks';
 import { useExecutionStore } from '../store/executionStore';
-import { WindowInfo, CUProvider } from '../api/client';
+import { WindowInfo } from '../api/client';
 
 export function ExecutePage() {
   const [selectedWindow, setSelectedWindow] = useState<WindowInfo | null>(null);
@@ -14,7 +14,7 @@ export function ExecutePage() {
   
   const { windows, loading: loadingWindows, refetch: refetchWindows } = useWindows();
   
-  const { status, steps, statusMessage, thinking, model, error, finalState, provider, setProvider, execute, reset } = useExecutionStore();
+  const { status, steps, statusMessage, thinking, model, error, finalState, execute, reset } = useExecutionStore();
   const isRunning = status === 'running';
 
   const handleExecute = async (instruction: string) => {
@@ -47,30 +47,12 @@ export function ExecutePage() {
           loading={loadingWindows}
         />
 
-        {/* Provider Toggle */}
+        {/* Claude is Clariti's single supported AI provider. */}
         <div className="mt-auto p-4 border-t border-void-700">
           <p className="text-[10px] uppercase tracking-wider text-void-500 mb-2">AI Provider</p>
-          <div className="flex gap-1 bg-void-900 rounded-lg p-1">
-            {(['claude', 'gemini'] as CUProvider[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => setProvider(p)}
-                disabled={isRunning}
-                className={`
-                  flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all
-                  ${provider === p
-                    ? 'bg-plasma-500/20 text-plasma-300 shadow-sm'
-                    : 'text-void-400 hover:text-void-200'
-                  }
-                  disabled:opacity-50 disabled:cursor-not-allowed
-                `}
-              >
-                {p === 'gemini' ? 'Gemini' : 'Claude'}
-              </button>
-            ))}
-          </div>
+          <div className="bg-plasma-500/20 text-plasma-300 rounded-lg px-3 py-2 text-xs font-medium">Claude</div>
           <p className="text-[10px] text-void-500 mt-1.5">
-            {provider === 'gemini' ? 'Browser-optimized • Normalized coords' : 'Any app • Pixel-accurate coords'}
+            Any app • Pixel-accurate coordinates
           </p>
         </div>
       </aside>

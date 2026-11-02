@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import net from 'net';
@@ -55,6 +55,7 @@ function startBackend(timeoutMs = 30_000): Promise<void> {
         ...process.env,
         HOST: '127.0.0.1',
         PORT: String(backendPort),
+        CLARITI_DATA_DIR: path.join(app.getPath('userData'), 'backend-data'),
         PYTHONUNBUFFERED: '1',   // flush stdout immediately — required for startup detection
         PYTHONFAULTHANDLER: '1', // print traceback on fatal signal
       },
@@ -238,37 +239,4 @@ ipcMain.handle('request-screen-recording', () => {
     'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   );
   return systemPreferences.getMediaAccessStatus('screen') === 'granted';
-});
-
-// API key management via OS keychain (safeStorage)
-const KEY_FILE = () => path.join(app.getPath('userData'), 'anthropic-key.bin');
-
-ipcMain.handle('save-anthropic-key', (_event, key: string) => {
-  if (!key) {
-    const f = KEY_FILE();
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-    return;
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('OS keychain encryption is not available on this machine.');
-  }
-  const encrypted = safeStorage.encryptString(key);
-  fs.writeFileSync(KEY_FILE(), encrypted);
-});
-
-ipcMain.handle('get-anthropic-key', () => {
-  const f = KEY_FILE();
-  if (!fs.existsSync(f)) return null;
-  if (!safeStorage.isEncryptionAvailable()) return null;
-  try {
-    const encrypted = fs.readFileSync(f);
-    return safeStorage.decryptString(encrypted);
-  } catch {
-    return null;
-  }
-});
-
-ipcMain.handle('delete-anthropic-key', () => {
-  const f = KEY_FILE();
-  if (fs.existsSync(f)) fs.unlinkSync(f);
 });

@@ -20,7 +20,6 @@ import {
   type StepRecord,
   type CloudTestRunDetail,
 } from '../api/client';
-import { useKeyStore } from './keyStore';
 import { queryClient } from '../lib/queryClient';
 
 export type TestRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
@@ -226,7 +225,6 @@ export const useTestSuiteExecutionStore = create<TestSuiteExecutionState>((set, 
           cloud_feature_id: featureId,
           cloud_user_id: userId,
           cloud_token: token,
-          anthropic_api_key: useKeyStore.getState().anthropicKey,
         },
         {
           onSuiteStart: () => {},

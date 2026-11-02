@@ -5,6 +5,8 @@ from bson import ObjectId
 from pymongo.database import Database
 
 from app.db.mongodb import doc_to_dict
+from app.services.ai_cost_service import usd_to_microusd
+from app.core.config import settings
 
 
 class UserService:
@@ -25,6 +27,11 @@ class UserService:
             "name": name,
             "hashed_password": hashed_password,
             "avatar_url": None,
+            "free_credit_microusd": usd_to_microusd(settings.DEFAULT_FREE_CREDIT_USD),
+            "spent_microusd": 0,
+            "ai_access_status": "active",
+            "ai_request_active": False,
+            "ai_request_started_at": None,
             "created_at": now,
             "updated_at": now,
         }

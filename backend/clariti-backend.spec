@@ -12,7 +12,6 @@ a = Analysis(
     datas=[
         ('agents', 'agents'),
         ('models', 'models'),
-        ('data', 'data'),
     ],
     hiddenimports=[
         # uvicorn dynamic imports

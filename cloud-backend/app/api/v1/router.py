@@ -9,6 +9,7 @@ from app.api.v1.test_runs import router as test_runs_router
 from app.api.v1.test_results import router as test_results_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.waitlist import router as waitlist_router
+from app.api.v1.ai import router as ai_router
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -21,3 +22,4 @@ api_router.include_router(test_runs_router)
 api_router.include_router(test_results_router)
 api_router.include_router(settings_router)
 api_router.include_router(waitlist_router)
+api_router.include_router(ai_router)

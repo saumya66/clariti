@@ -16,8 +16,6 @@ def _to_response(doc: dict) -> UserSettingsSchema:
         default_model=doc.get("default_model", "claude-haiku-4-5"),
         preferences=doc.get("preferences"),
         updated_at=doc["updated_at"],
-        has_anthropic_key=bool(doc.get("anthropic_api_key_encrypted")),
-        has_gemini_key=bool(doc.get("gemini_api_key_encrypted")),
     )
 
 
@@ -39,10 +37,5 @@ def update_settings(
     current_user: dict = Depends(get_current_user),
 ):
     updates = body.model_dump(exclude_unset=True)
-    if "anthropic_api_key" in updates:
-        updates["anthropic_api_key_encrypted"] = updates.pop("anthropic_api_key")
-    if "gemini_api_key" in updates:
-        updates["gemini_api_key_encrypted"] = updates.pop("gemini_api_key")
-
     settings = user_settings_service.upsert(db, user_id=current_user["id"], **updates)
     return _to_response(settings)

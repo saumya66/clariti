@@ -24,6 +24,9 @@ class User(BaseModel):
     email: str
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    free_credit_microusd: int = 0
+    spent_microusd: int = 0
+    ai_access_status: str = "active"
     created_at: datetime
     updated_at: datetime
 

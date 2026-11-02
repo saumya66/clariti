@@ -16,6 +16,9 @@ from google import genai
 from google.genai import types
 import anthropic
 
+from services.anthropic_cost_capture import record_anthropic_response
+from services.anthropic_gateway import AnthropicGatewayClient
+
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5"
@@ -39,6 +42,7 @@ class BaseAgent(ABC):
         self,
         provider: Provider = "claude",
         api_key: Optional[str] = None,
+        cloud_token: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.1,
     ):
@@ -52,10 +56,17 @@ class BaseAgent(ABC):
             self.client = genai.Client(api_key=key)
             self.model = model or DEFAULT_GEMINI_MODEL
         else:
-            key = api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not key:
-                raise ValueError("ANTHROPIC_API_KEY not found. Set it in .env or pass directly.")
-            self.client = anthropic.Anthropic(api_key=key)
+            if cloud_token:
+                self.client = AnthropicGatewayClient(
+                    cloud_token=cloud_token,
+                    agent=self.__class__.__name__,
+                    call_site="base_agent",
+                )
+            else:
+                key = api_key or os.getenv("ANTHROPIC_API_KEY")
+                if not key:
+                    raise ValueError("Sign in to use Clariti's hosted AI.")
+                self.client = anthropic.Anthropic(api_key=key)
             self.model = model or DEFAULT_CLAUDE_MODEL
 
     @property
@@ -151,6 +162,12 @@ class BaseAgent(ABC):
             system=system,
             messages=[{"role": "user", "content": content}],
             temperature=self.temperature,
+        )
+        record_anthropic_response(
+            response,
+            agent=self.__class__.__name__,
+            call_site="base_agent",
+            requested_model=self.model,
         )
 
         text = response.content[0].text if response.content else ""

@@ -4,11 +4,11 @@ Clariti Cloud Backend
 Deployed on Render/Railway. Handles:
 - Auth (register, login, JWT)
 - Database CRUD via MongoDB (projects, features, test cases, runs, results)
-- User settings (provider, model, API key storage)
+- User settings, hosted Claude inference, credit metering, and usage ledger
 
 Does NOT handle:
 - Screenshots, mouse/keyboard, window management (that's the local agent)
-- AI calls (those happen on the local backend)
+- Screenshots or computer actions (those remain on the local backend)
 """
 
 from fastapi import FastAPI

@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
+    # Hosted Claude inference. The Anthropic key lives only on this server.
+    ANTHROPIC_API_KEY: str = ""
+    DEFAULT_FREE_CREDIT_USD: str = "1.00"
+    AI_REQUEST_LEASE_SECONDS: int = 300
+
     class Config:
         case_sensitive = True
         env_file = str(_ENV_FILE)

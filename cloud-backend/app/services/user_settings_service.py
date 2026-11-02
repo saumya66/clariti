@@ -20,8 +20,6 @@ class UserSettingsService:
             "user_id": user_id,
             "default_provider": fields.get("default_provider", "claude"),
             "default_model": fields.get("default_model", "claude-haiku-4-5"),
-            "anthropic_api_key_encrypted": fields.get("anthropic_api_key_encrypted"),
-            "gemini_api_key_encrypted": fields.get("gemini_api_key_encrypted"),
             "preferences": fields.get("preferences", {}),
             "updated_at": now,
         }

@@ -5,10 +5,11 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build:backend": "cd ../backend && .venv/bin/pyinstaller --clean --noconfirm clariti-backend.spec",
+    "build": "npm run build:backend && tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "vite build && electron-builder"
+    "electron:build": "npm run build:backend && vite build && electron-builder"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

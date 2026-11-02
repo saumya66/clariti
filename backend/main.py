@@ -59,7 +59,6 @@ from execution_learning import (
 )
 from vision import (
     calculate_click_coordinates,
-    configure_gemini,
     detect_element,
     draw_debug_overlay,
     image_to_base64,
@@ -229,15 +228,7 @@ def _unsourced_sensitive_input_reason(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan - configure Gemini on startup."""
-    # Startup
-    try:
-        configure_gemini()
-        print("✓ Gemini API configured")
-    except ValueError as e:
-        print(f"⚠ Warning: {e}")
-        print("  The /act endpoint will fail until GEMINI_API_KEY is set.")
-    
+    """Application lifespan — request local OS permissions."""
     # Actively request permissions on startup so macOS shows the native dialogs
     # immediately rather than waiting for the first real API usage.
     perms = request_permissions("all")
@@ -368,6 +359,7 @@ class CURequest(BaseModel):
     instruction: str
     window_title: Optional[str] = None
     max_steps: int = 25
+    cloud_token: Optional[str] = None
 
 
 class AutoStepResult(BaseModel):
@@ -2299,6 +2291,7 @@ async def claude_computer_use_stream(request: CURequest):
             agent = ClaudeComputerUseAgent(
                 display_width=window.bounds.width,
                 display_height=window.bounds.height,
+                cloud_token=request.cloud_token,
             )
         except ValueError as e:
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
@@ -2808,7 +2801,6 @@ class ExecuteTestsRequest(BaseModel):
     cloud_feature_id: str | None = None
     cloud_user_id: str | None = None
     cloud_token: str | None = None
-    anthropic_api_key: str | None = None
 
 
 @app.post("/feature/{context_id}/execute")
@@ -2833,6 +2825,8 @@ async def execute_tests_stream(context_id: str, request: ExecuteTestsRequest):
       suite_start, test_start, step, need_help, input_required, paused, aborted,
       test_complete, suite_complete, error
     """
+    if request.provider != "claude":
+        raise HTTPException(status_code=400, detail="Only Claude is supported.")
     print(f"\n{'='*80}")
     print(f"[EXECUTE] ===== /feature/{context_id}/execute ENDPOINT CALLED =====")
     print(f"[EXECUTE] Request received: context_id={context_id}, window_title={request.window_title}, provider={request.provider}")
@@ -3125,7 +3119,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
                         display_width=window.bounds.width,
                         display_height=window.bounds.height,
                         system_prompt=cu_system_prompt,
-                        api_key=request.anthropic_api_key or None,
+                        cloud_token=request.cloud_token,
                     )
                     allowed_input_source_text = f"{agent.system_prompt}\n{goal}"
                 except ValueError as e:
@@ -3840,7 +3834,7 @@ Expected result: {test_case.get("expected_result", "N/A")}"""
 
                 learner = ProjectContextLearnerAgent(
                     provider="claude",
-                    api_key=request.anthropic_api_key or None,
+                    cloud_token=request.cloud_token,
                 )
                 learner_result = await asyncio.to_thread(
                     learn_and_update_contexts,
@@ -4049,7 +4043,6 @@ class CreateProjectRequest(BaseModel):
     images: list = []   # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []    # [str]
     token: str
-    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/project/create")
@@ -4068,8 +4061,7 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
             await asyncio.sleep(0)
 
             import base64
-            _akey = request.anthropic_api_key or None
-            image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
+            image_agent = ImageContextRetrieverAgent(provider="claude", cloud_token=request.token)
             image_contexts = []
             for img in request.images:
                 raw = base64.b64decode(img["content_b64"])
@@ -4105,7 +4097,7 @@ async def cloud_create_project_with_context(request: CreateProjectRequest):
                     result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
-            synth = _SynthAgent(provider="claude", api_key=_akey)
+            synth = _SynthAgent(provider="claude", cloud_token=request.token)
             context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving project...'})}\n\n"
@@ -4148,7 +4140,6 @@ class UpdateProjectContextRequest(BaseModel):
     token: str
     images: list = []  # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []   # [str]
-    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/project/{project_id}/update-context")
@@ -4181,8 +4172,7 @@ async def cloud_update_project_context(project_id: str, request: UpdateProjectCo
             await asyncio.sleep(0)
 
             import base64
-            _akey = request.anthropic_api_key or None
-            image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
+            image_agent = ImageContextRetrieverAgent(provider="claude", cloud_token=request.token)
             image_contexts = []
             for img in request.images:
                 raw = base64.b64decode(img["content_b64"])
@@ -4218,7 +4208,7 @@ async def cloud_update_project_context(project_id: str, request: UpdateProjectCo
                     result = self.parse_response(self.call_llm(raw_context, max_tokens=512))
                     return (result or {}).get("summary", "") if result else ""
 
-            synth = _SynthAgent(provider="claude", api_key=_akey)
+            synth = _SynthAgent(provider="claude", cloud_token=request.token)
             context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving updated context...'})}\n\n"
@@ -4256,7 +4246,6 @@ class BuildFeatureContextRequest(BaseModel):
     user_feedback: Optional[str] = None
     images: list = []  # [{"filename": str, "content_b64": str, "file_size": int}]
     texts: list = []   # [str]
-    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/feature/{feature_id}/build-context")
@@ -4285,7 +4274,6 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     token=request.token,
                 )
 
-            _akey = request.anthropic_api_key or None
             from agents.base_agent import BaseAgent
             class _SynthAgent(BaseAgent):
                 @property
@@ -4323,7 +4311,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                     "Keep all accurate information from the existing summary."
                 )
 
-                synth = _SynthAgent(provider="claude", api_key=_akey)
+                synth = _SynthAgent(provider="claude", cloud_token=request.token)
                 context_summary = await asyncio.to_thread(synth.synthesise, refine_prompt)
 
             else:
@@ -4340,7 +4328,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                 await asyncio.sleep(0)
 
                 import base64
-                image_agent = ImageContextRetrieverAgent(provider="claude", api_key=_akey)
+                image_agent = ImageContextRetrieverAgent(provider="claude", cloud_token=request.token)
                 image_contexts = []
                 all_items = feature_items + project_items
                 for item in all_items:
@@ -4372,7 +4360,7 @@ async def cloud_build_feature_context(feature_id: str, request: BuildFeatureCont
                 for note in text_notes:
                     context_parts.append(f"Note: {note}")
 
-                synth = _SynthAgent(provider="claude", api_key=_akey)
+                synth = _SynthAgent(provider="claude", cloud_token=request.token)
                 context_summary = await asyncio.to_thread(synth.synthesise, "\n".join(context_parts)) if context_parts else ""
 
             yield f"data: {json.dumps({'event': 'progress', 'message': 'Saving context...'})}\n\n"
@@ -4420,7 +4408,6 @@ class GenerateFeatureTestsRequest(BaseModel):
     token: str
     provider: str = "claude"
     user_feedback: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
 
 
 @app.post("/cloud/feature/{feature_id}/generate-tests")
@@ -4453,7 +4440,9 @@ async def cloud_generate_feature_tests(feature_id: str, request: GenerateFeature
             await asyncio.sleep(0)
 
             from agents.test_planner_agent import TestPlannerAgent
-            planner = TestPlannerAgent(provider=request.provider, api_key=request.anthropic_api_key or None)
+            if request.provider != "claude":
+                raise ValueError("Only Claude is supported.")
+            planner = TestPlannerAgent(provider="claude", cloud_token=request.token)
 
             combined_context = {
                 "name": (feature or {}).get("name", ""),

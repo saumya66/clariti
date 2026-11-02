@@ -57,3 +57,10 @@ def init_indexes():
     db.test_results.create_index("run_id")
     db.user_settings.create_index("user_id", unique=True)
     db.waitlist.create_index("email", unique=True)
+    db.ai_usage_events.create_index("anthropic_response_id", unique=True)
+    db.ai_usage_events.create_index([("user_id", 1), ("created_at", -1)])
+    db.system_settings.update_one(
+        {"_id": "ai"},
+        {"$setOnInsert": {"ai_requests_enabled": True, "disabled_reason": None}},
+        upsert=True,
+    )

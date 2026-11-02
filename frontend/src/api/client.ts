@@ -4,7 +4,6 @@
 import axios from 'axios';
 import { getBaseUrl, getCloudBaseUrl } from './config';
 import { useAuthStore } from '@/store/authStore';
-import { useKeyStore } from '@/store/keyStore';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -309,7 +308,6 @@ export async function updateProjectContext(
   callbacks: CloudContextUpdateCallbacks
 ): Promise<void> {
   const token = useAuthStore.getState().token;
-  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = images.length > 0
     ? await Promise.all(images.map(async (f) => ({
         filename: f.name,
@@ -322,7 +320,6 @@ export async function updateProjectContext(
     images: imagePayloads,
     texts,
     token,
-    anthropic_api_key: anthropicKey,
   });
 
   if (!response.ok) {
@@ -722,7 +719,6 @@ export interface ExecuteTestsRequest {
   cloud_feature_id?: string;
   cloud_user_id?: string;
   cloud_token?: string;
-  anthropic_api_key?: string | null;
 }
 
 export interface TestSuiteStartEvent {
@@ -1132,7 +1128,19 @@ export interface CUStreamCallbacks {
   onError?: (message: string) => void;
 }
 
-export type CUProvider = 'gemini' | 'claude';
+export type CUProvider = 'claude';
+
+export interface AICredit {
+  free_credit_microusd: number;
+  spent_microusd: number;
+  remaining_microusd: number;
+  ai_access_status: string;
+}
+
+export async function getAICredit(): Promise<AICredit> {
+  const response = await cloudApiClient.get<AICredit>('/api/v1/ai/credit');
+  return response.data;
+}
 
 // =============================================================================
 // Cloud-backed Project + Feature Context SSE
@@ -1244,7 +1252,6 @@ export async function createProjectWithContext(
   callbacks: CloudProjectCallbacks
 ): Promise<void> {
   const token = useAuthStore.getState().token;
-  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = await Promise.all(
     images.map(async (f) => ({
       filename: f.name,
@@ -1259,7 +1266,6 @@ export async function createProjectWithContext(
     texts,
     source_memory: sourceMemory,
     token,
-    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1284,7 +1290,6 @@ export async function buildFeatureContext(
   texts?: string[]
 ): Promise<void> {
   const token = useAuthStore.getState().token;
-  const anthropicKey = useKeyStore.getState().anthropicKey;
   const imagePayloads = images && images.length > 0
     ? await Promise.all(images.map(async (f) => ({
         filename: f.name,
@@ -1299,7 +1304,6 @@ export async function buildFeatureContext(
     user_feedback: userFeedback,
     images: imagePayloads,
     texts: texts ?? [],
-    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1323,14 +1327,12 @@ export async function generateFeatureTests(
   userFeedback?: string
 ): Promise<void> {
   const token = useAuthStore.getState().token;
-  const anthropicKey = useKeyStore.getState().anthropicKey;
   const response = await streamLocalFetch(`/cloud/feature/${featureId}/generate-tests`, {
     feature_id: featureId,
     project_id: projectId,
     token,
     provider,
     user_feedback: userFeedback || null,
-    anthropic_api_key: anthropicKey,
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));
@@ -1396,7 +1398,8 @@ export async function executeCUStream(
   callbacks: CUStreamCallbacks,
   provider: CUProvider = 'claude'
 ): Promise<void> {
-  const endpoint = provider === 'claude' ? '/claude-cu/stream' : '/cu/stream';
+  const endpoint = '/claude-cu/stream';
+  const cloudToken = useAuthStore.getState().token;
   const response = await streamFetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1404,6 +1407,7 @@ export async function executeCUStream(
       instruction: request.instruction,
       window_title: request.window_title,
       max_steps: request.max_steps || 25,
+      cloud_token: cloudToken,
     }),
   });
 

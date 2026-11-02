@@ -19,3 +19,6 @@ email-validator
 
 # Environment
 python-dotenv==1.0.1
+
+# Hosted Claude inference
+anthropic==0.84.0

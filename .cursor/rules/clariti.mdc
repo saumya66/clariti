@@ -17,7 +17,7 @@ Three independent services communicate to deliver the full product:
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Frontend  (React + Vite, runs in browser)                          │
 │  - User-facing UI                                                   │
-│  - Calls local backend via HTTP/SSE for AI + execution              │
+│  - Calls local backend via HTTP/SSE for orchestration + execution   │
 │  - Calls cloud backend directly for auth + data CRUD               │
 └──────────────────────┬──────────────────────┬───────────────────────┘
                        │                      │
@@ -30,7 +30,8 @@ Three independent services communicate to deliver the full product:
 │  - Captures screenshots     │  │  - Persistent data store          │
 │  - Executes mouse/keyboard  │  │  - Projects, Features,            │
 │  - Orchestrates test runs   │  │    TestCases, TestRuns, Results   │
-│  - Calls cloud to save data │  │                                   │
+│  - Sends Claude payloads to │  │  - Hosted Claude inference        │
+│    authenticated gateway    │  │  - Credit metering + usage ledger │
 └─────────────────────────────┘  └───────────────────────────────────┘
 ```
 
@@ -76,7 +77,7 @@ Notes:
 
 - The cloud backend runs uvicorn with `reload=True`, so it auto-restarts on code changes; the local backend does not — restart it manually after edits.
 - On startup, the local backend triggers the macOS Screen Recording and Accessibility permission dialogs (see macOS Permissions). Both must be granted to the launching terminal/process for screenshots and mouse/keyboard control to work.
-- In local dev (browser) mode, `ANTHROPIC_API_KEY` must be uncommented in `backend/.env` — there is no Electron keychain IPC in the browser (see Anthropic API Key Management).
+- `ANTHROPIC_API_KEY` belongs only in `cloud-backend/.env` or the hosted cloud environment. The frontend, DMG, and local execution backend never receive it.
 
 ---
 
@@ -103,7 +104,7 @@ Notes:
 /app                       → routes/app.tsx          (layout: sidebar + SidebarInset)
   /app/                    → routes/app/index.tsx    (projects list)
   /app/create              → routes/app/create.tsx   (free-form create, legacy)
-  /app/settings            → routes/app/settings.tsx (API key management — add/update/remove Anthropic key)
+  /app/settings            → routes/app/settings.tsx (hosted AI allowance/usage/remaining credit)
   /app/execute             → routes/app/execute.tsx  (test suite execution + replay page)
   /app/projects/$projectId → routes/app/projects/$projectId.tsx  (project layout guard — Outlet only)
     /app/projects/$projectId/          → $projectId/index.tsx    (project overview bento)
@@ -115,7 +116,7 @@ Notes:
 /execute                   → routes/execute.tsx      (redirects to /app/execute if logged in)
 ```
 
-**`/app/settings`** — the primary place for users to add, update, or remove their Anthropic API key. Uses `save-anthropic-key` / `delete-anthropic-key` IPC calls. Accessible from the sidebar.
+**`/app/settings`** — displays the signed-in user's hosted AI allowance, usage, and remaining credit. Testers never enter or store an Anthropic key.
 
 **Key routing rule:** In TanStack Router, `foo.tsx` alongside a `foo/` directory becomes the layout route (requires `<Outlet />`). Use `foo/index.tsx` when `foo.tsx` should be an independent index route, not a layout wrapper. Both `$projectId.tsx` and `$featureId.tsx` are pure layout guards that only render `<Outlet />`.
 
@@ -1340,7 +1341,7 @@ cd frontend && npm run electron:build
 
 All TODOs below are **done**:
 
-- **PyInstaller spec file** — `backend/clariti-backend.spec` exists with all hidden imports and data dirs
+- **PyInstaller spec file** — `backend/clariti-backend.spec` exists with required hidden imports. It deliberately excludes `backend/data`.
 - **Startup readiness check** — `electron/main.ts` listens for Uvicorn's `"Application startup complete."` on stdout (reliable, no polling race condition)
 - **Port conflict handling** — `findFreePort(8000)` finds a free port at startup; `ipcMain.handle('get-backend-url')` returns the actual port
 - **Crash recovery** — backend restarts automatically up to `MAX_RESTARTS = 3` times with exponential backoff
@@ -1350,12 +1351,8 @@ All TODOs below are **done**:
 
 **Build commands (current):**
 ```bash
-# 1. Build Python sidecar
-cd backend && .venv/bin/pyinstaller clariti-backend.spec --noconfirm
-# Output: backend/dist/clariti-backend
-
-# 2. Build Electron DMG
 cd frontend && npm run build
+# npm first rebuilds backend/dist/clariti-backend, then packages Electron
 # Output: frontend/release/Clariti-1.0.0-arm64.dmg
 ```
 
@@ -1371,6 +1368,9 @@ cd frontend && npm run build
 |----------|-------|
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `SECRET_KEY` | JWT signing secret |
+| `ANTHROPIC_API_KEY` | Clariti's server-side Anthropic key; never ship it in the DMG |
+| `DEFAULT_FREE_CREDIT_USD` | Initial allowance for new and unmigrated users, e.g. `1.00` |
+| `AI_REQUEST_LEASE_SECONDS` | Stale concurrent-request lease timeout; default `300` |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins |
 
 ### MongoDB Atlas Setup
@@ -1384,49 +1384,64 @@ cd frontend && npm run build
 
 ---
 
-## Anthropic API Key Management
+## Hosted Claude Inference and Free Credit
 
-Clariti uses Claude for test execution. The API key is provided by the user and stored securely on their machine.
+The frontend sends its existing JWT to the local backend. `BaseAgent` and
+`ClaudeComputerUseAgent` use `AnthropicGatewayClient`, which forwards the unchanged Claude
+request payload to authenticated `POST /api/v1/ai/inference`. The cloud backend alone owns
+`ANTHROPIC_API_KEY`; it calls Anthropic and returns a response that is rehydrated into the
+same SDK `Message` type expected by the existing agents. Screenshots and computer actions
+remain local; only the AI request/response crosses the gateway.
 
-### Storage: Electron `safeStorage` (OS Keychain)
+Each user stores `free_credit_microusd`, `spent_microusd`, `ai_access_status`, and a
+short-lived active-request lease. One dollar equals 1,000,000 micro-USD. Before a request,
+the gateway checks the global `system_settings/_id=ai` switch, account status, remaining
+credit, and lease. After a successful response it calculates exact Haiku 4.5 cost from
+normal input, output, five-minute/one-hour cache writes, and cache reads; inserts one
+`ai_usage_events` record keyed uniquely by the Anthropic response ID; then increments the
+user's spend. The final request may slightly exceed the allowance; the next request is
+blocked with HTTP 402. No worst-case reservation is used.
 
-Keys are encrypted using the OS-level keychain (macOS Keychain, Windows DPAPI) via Electron's `safeStorage` API. The encrypted bytes are written to a file in the user's app data directory — never stored in plaintext, never sent to any server.
+Operational commands and the full deployment/runbook are in
+`docs/hosted-ai-credit.md`. `/api/v1/ai/credit` powers the Settings balance display.
 
-**File location:** `~/Library/Application Support/clariti-desktop/anthropic-key.bin`
+### Cost Calibration Experiment
 
-### IPC Handlers (`electron/main.ts`)
+`backend/scripts/anthropic_cost_experiment.py` is an isolated developer utility for
+validating Clariti's local Anthropic cost calculation against the Claude Console
+dashboard before server-funded user credits are implemented. It does not participate in
+normal Clariti execution and does not write to MongoDB.
 
-| Channel | Direction | Purpose |
-|---------|-----------|---------|
-| `save-anthropic-key` | renderer → main | Encrypt + write key to disk |
-| `get-anthropic-key` | renderer → main | Decrypt + return key string |
-| `delete-anthropic-key` | renderer → main | Delete key file from disk |
+The complete operating and model-migration runbook is
+`docs/anthropic-cost-experiment.md`. Follow it rather than changing a model or price from
+memory.
 
-### Frontend Store (`src/store/keyStore.ts`)
+- Running it without arguments is a no-spend preview.
+- `--execute` sends five sequential Haiku 4.5 requests representing text, image,
+  Computer Use, a five-minute cache write, and a cache read.
+- It reads the existing `ANTHROPIC_API_KEY` environment variable or `backend/.env` and
+  never includes the key in its output.
+- It records request IDs, returned token categories, per-category calculated USD cost,
+  and the experiment total under ignored `backend/data/cost-experiments/` by default.
+- Pricing is explicitly configured for the exact Clariti model and must be reverified
+  against Anthropic's official model-pricing page before testing another model.
+- Use a dedicated experiment API key and record the dashboard baseline before executing,
+  then compare the dashboard increase with `calculated_total_usd` in the report.
 
-`useKeyStore` holds the key in memory (not persisted to localStorage) for the current session. On app load, `getAnthropicKey()` IPC is called to hydrate the store.
+For an exact real-run validation, set `CLARITI_CAPTURE_AI_COSTS=true` and a unique
+`CLARITI_COST_CAPTURE_SESSION` before restarting the backend. Post-response hooks in both
+`BaseAgent._call_claude()` and `ClaudeComputerUseAgent._call()` append usage-only JSONL
+events under `backend/data/cost-experiments/real-runs/`; they do not change Anthropic
+request payloads. Wait for execution and learner work to finish, disable capture, restart,
+and summarize with `backend/scripts/summarize_anthropic_cost_capture.py <session-id>`.
+The full procedure and safety constraints are in `docs/anthropic-cost-experiment.md`.
 
-### API Key Entry
-
-There is no onboarding modal. Users add their Anthropic API key at any time via **Settings** (`/app/settings`). The key field is always accessible from the sidebar — no forced flow on first login.
-
-### Key Flow into Test Execution
-
-The Anthropic key is passed in the request body to `POST /feature/{id}/execute`:
-```typescript
-{ provider: "claude", anthropic_key: useKeyStore.getState().key }
-```
-
-The local backend uses it to initialise `ClaudeComputerUseAgent` with the user's own key. The key is never forwarded to the cloud backend.
-
-### Dev Mode (browser) vs Electron App — Key Difference
-
-| Mode | How key is stored | How key reaches backend |
-|------|------------------|------------------------|
-| **Electron app (DMG)** | OS keychain via `safeStorage` IPC | `keyStore` hydrated from IPC → passed in execute request body |
-| **Local dev (browser at localhost:5173)** | `window.electronAPI` does not exist | Settings page IPC calls fail silently → `anthropic_api_key` in request is `null` → backend falls back to `ANTHROPIC_API_KEY` env var |
-
-**In local dev mode, `ANTHROPIC_API_KEY` must be set (uncommented) in `backend/.env`.** If it is commented out, the `ClaudeComputerUseAgent` constructor raises `ValueError: ANTHROPIC_API_KEY not found`, which is caught silently (yielded as an SSE error event, not printed to terminal), causing every test to fail instantly with no visible backend log output.
+Validation completed on 2026-11-01: an exact Clariti execution captured 38 unique
+Anthropic responses with no duplicates or calculation errors. The calculated total was
+`$0.24439945`; Claude Console moved from a displayed `$16.00` to `$15.75`, consistent
+with independent cent rounding, and every dashboard token row matched the corresponding
+captured usage. The calculator and coverage of both production call paths are therefore
+validated for Haiku 4.5 execution and post-run learning.
 
 ---
 

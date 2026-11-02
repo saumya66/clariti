@@ -17,6 +17,9 @@ from typing import Any, Optional
 import anthropic
 from PIL import Image
 
+from services.anthropic_cost_capture import record_anthropic_response
+from services.anthropic_gateway import AnthropicGatewayClient
+
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 TOOL_VERSION = "computer_20250124"
@@ -383,14 +386,21 @@ class ClaudeComputerUseAgent:
         display_width: int,
         display_height: int,
         api_key: Optional[str] = None,
+        cloud_token: Optional[str] = None,
         model: str = DEFAULT_MODEL,
         system_prompt: Optional[str] = None,
     ):
-        key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not key:
-            raise ValueError("ANTHROPIC_API_KEY not found. Set it in .env or pass directly.")
-
-        self.client = anthropic.Anthropic(api_key=key)
+        if cloud_token:
+            self.client = AnthropicGatewayClient(
+                cloud_token=cloud_token,
+                agent=self.__class__.__name__,
+                call_site="computer_use",
+            )
+        else:
+            key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not key:
+                raise ValueError("Sign in to use Clariti's hosted AI.")
+            self.client = anthropic.Anthropic(api_key=key)
         self.model = model
         # Logical window dimensions used by pyautogui.
         self.display_width = display_width
@@ -589,6 +599,8 @@ class ClaudeComputerUseAgent:
     def _call(self) -> ClaudeCUResponse:
         """Call Claude and parse the response."""
         self._api_call_count += 1
+        if isinstance(self.client, AnthropicGatewayClient):
+            self.client.call_number = self._api_call_count
         debug_messages = _debug_messages_enabled()
         if debug_messages:
             debug_request = {
@@ -618,6 +630,13 @@ class ClaudeComputerUseAgent:
             messages=self.messages,
             betas=[BETA_FLAG],
             cache_control={"type": "ephemeral"},
+        )
+        record_anthropic_response(
+            response,
+            agent=self.__class__.__name__,
+            call_site="computer_use",
+            requested_model=self.model,
+            call_number=self._api_call_count,
         )
 
         if debug_messages:
