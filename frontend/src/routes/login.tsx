@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/authStore';
 import { useLogin, useRegister } from '@/hooks/useAuthMutations';
+import { publicAssetUrl } from '@/lib/assets';
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
@@ -62,7 +63,7 @@ function LoginPage() {
       <main className="grid min-h-full w-full overflow-hidden bg-white lg:grid-cols-[0.95fr_1.05fr]">
         <section
           className="relative m-3 hidden overflow-hidden rounded-3xl bg-[#09091a] bg-cover bg-center p-8 text-white lg:flex lg:flex-col lg:justify-between"
-          style={{ backgroundImage: "linear-gradient(180deg, rgba(6, 5, 20, 0.05) 25%, rgba(4, 4, 12, 0.92) 88%), url('/auth-bg.png')" }}
+          style={{ backgroundImage: `linear-gradient(180deg, rgba(6, 5, 20, 0.05) 25%, rgba(4, 4, 12, 0.92) 88%), url("${publicAssetUrl('auth-bg.png')}")` }}
         >
           <p className="text-xs font-semibold tracking-[0.24em] text-white/80">CLARITI</p>
           <div className="max-w-xs">
@@ -78,7 +79,7 @@ function LoginPage() {
         <section className="flex min-h-155 items-center justify-center px-7 py-12 sm:px-12 lg:px-16">
           <div className="w-full max-w-sm">
             <div className="flex items-center justify-center gap-2">
-              <img src="/logo.png" alt="Clariti" className="size-7 object-contain" />
+              <img src={publicAssetUrl('logo.png')} alt="Clariti" className="size-7 object-contain" />
               <span className="text-base font-semibold tracking-tight">Clariti</span>
             </div>
 

@@ -29,6 +29,7 @@ import {
 } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
 import { cn } from '@/lib/utils';
+import { publicAssetUrl } from '@/lib/assets';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useCreateFeature,
@@ -373,7 +374,7 @@ export function CreateTestFlow({ onClose, projectId }: CreateTestFlowProps) {
 
         {/* Brand */}
         <div className="mb-8 flex items-center gap-2.5">
-          <img src="/logo.png" alt="Clariti" className="size-7 shrink-0 object-contain" />
+          <img src={publicAssetUrl('logo.png')} alt="Clariti" className="size-7 shrink-0 object-contain" />
           <div className="min-w-0">
             <p className="text-xs leading-none text-muted-foreground">Clariti</p>
             <p className="text-sm font-semibold leading-snug text-foreground">New Test Suite</p>

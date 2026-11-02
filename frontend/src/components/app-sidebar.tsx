@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { useAppStore } from '@/store/useAppStore';
 import { useAuthStore } from '@/store/authStore';
 import { useOnboardingStore } from '@/store/onboardingStore';
+import { publicAssetUrl } from '@/lib/assets';
 
 const menuItems = [
   { title: 'Projects', section: 'projects' as const, icon: Folder, to: '/app', requireAuth: true },
@@ -53,7 +54,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" asChild tooltip="Clariti">
                 <Link to={isAuthenticated ? '/app' : '/app/create'}>
-                  <img src="/logo.png" alt="Clariti" className="aspect-square size-8 rounded-lg object-cover" />
+                  <img src={publicAssetUrl('logo.png')} alt="Clariti" className="aspect-square size-8 rounded-lg object-cover" />
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-semibold">Clariti</span>
                   </div>

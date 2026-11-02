@@ -32,6 +32,7 @@ import {
 import type { Project } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
 import { Link } from '@tanstack/react-router';
+import { publicAssetUrl } from '@/lib/assets';
 
 type ViewMode = 'grid' | 'list';
 
@@ -199,7 +200,7 @@ export function ProjectsSection() {
       {!loading && !error && (
         <section className="mt-6 flex flex-col items-center px-4 pb-2 pt-4 text-center sm:mt-8 sm:pt-6">
           <img
-            src="/projects-footer.png"
+            src={publicAssetUrl('projects-footer.png')}
             alt=""
             className="w-56 max-w-full object-contain sm:w-64"
           />
